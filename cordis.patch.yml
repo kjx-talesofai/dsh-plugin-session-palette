@@ -1,0 +1,24 @@
+# dsh-plugin-session-palette — bundle layer.
+#
+# One row mounts the package. The row id is load-bearing twice over: `dsh-settings`
+# derives the plugin's settings namespace from it, and the browser half resolves
+# its Config through `ctx.configForms.get('session-palette')`. This file's `id:`
+# and `ROW_ID` in the browser half must therefore stay in step.
+#
+# The package is dual-face (it also declares `dsh.client`), so the same row gives
+# the browser half a home.
+#
+# To change behaviour without the UI:
+#
+#   - id: session-palette
+#     name: 'dsh-plugin-session-palette'
+#     config:
+#       takeOver: false
+#
+# `takeOver` (default true) claims ⌘K for the palette with a fixed shortcut
+# binding. It writes no user preference: the shipped `session.search` command is
+# left exactly as it is, merely conflicted while the claim is held, so setting
+# this to false restores the shipped behaviour with nothing to undo.
+- insert:
+    - id: session-palette
+      name: 'dsh-plugin-session-palette'

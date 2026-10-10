@@ -1,0 +1,1422 @@
+/**
+ * Contract test for dsh-plugin-session-palette.
+ *
+ * There is no browser here, so the suite drives the plugin through the
+ * boundaries it owns and is explicit about the ones it does not.
+ *
+ *   Proven here
+ *   - `client.js` runs as a plain script (`node:vm`) against a
+ *     `window.__ModuleLoader__` facade and registers the package's own id, i.e.
+ *     the shipped artifact really is a script-executable client bundle.
+ *   - it requires only `react`, so materialization cannot miss the loader table,
+ *     and it imports no `@deepseek-ai/*` client package.
+ *   - the ids that must agree do: the Loader row in `cordis.patch.yml`, the
+ *     browser half's `ROW_ID` (the settings namespace `dsh-settings` derives),
+ *     and the locale namespace. Both shortcut command ids satisfy the shortcut
+ *     protocol's dotted-id pattern, which is load-bearing on desktop: a failing
+ *     id makes the definitions IPC reject the whole catalog and silently kills
+ *     every keyboard command in the app.
+ *   - the host half's Config carries both switches as `volatile` booleans
+ *     defaulting to true, and a non-volatile field would make the namespace
+ *     invisible to the page.
+ *   - `apply` wires the two contributions the design claims: exactly one
+ *     `slots.inject('shell.overlay', …)` registration, and a fixed shortcut
+ *     binding plus its observer. Every effect hands back a real disposer,
+ *     because a missing one breaks the next hot re-apply.
+ *   - the hotkey pipeline behaves: ⌘K toggles, consumes the gesture, and ignores
+ *     repeats, ⇧⌘K, ⌥⌘K, both-modifiers-together, and sequence resets.
+ *   - `takeOver: false` claims nothing; `moveSidebarSearch` gates the relocation
+ *     of the shipped `session.search` command, which is skipped whenever the user
+ *     has already touched that binding.
+ *   - the pure derivation is correct: recency buckets at calendar boundaries,
+ *     elapsed-time thresholds, activity tier ordering, folder labels, workspace
+ *     title resolution, the fuzzy matcher's subsequence/prefix precedence, the
+ *     store's publish suppression, and the projection dwell's single-flight.
+ *
+ *   NOT proven here
+ *   - anything the real harness owns: `ui-slots`/`ui-renderer` prop composition,
+ *     `dsh-client-locale`'s live resolution, `dsh-sessions`' real projection
+ *     payloads, `dsh-workspaces`' snapshot, and the Electron main process's
+ *     native interception. Those are stubbed. The rendered pixels, the real ⌘K
+ *     delivery on macOS, and the actual `turnOutline` coverage were verified
+ *     against the running app by hand instead — see docs/plan.md §10.
+ *   - the React component tree: the suite calls `apply` and reads the inject face
+ *     it registers, but never renders. Row layout, focus behaviour and styling
+ *     remain browser-verified only.
+ *
+ * Run with `npm test`.
+ */
+import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
+import { dirname, join, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import test from 'node:test'
+import vm from 'node:vm'
+
+const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
+const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
+const clientSource = readFileSync(join(root, 'client.js'), 'utf8')
+const hostSource = readFileSync(join(root, 'index.js'), 'utf8')
+const patchSource = readFileSync(join(root, 'cordis.patch.yml'), 'utf8')
+
+const SLOT = 'shell.overlay'
+const FIXED_ID = 'session-palette.toggle'
+const COMMAND_ID = 'session.palette'
+const ROW_ID = 'session-palette'
+const NS = pkg.name
+
+/** The shortcut protocol's id pattern; an id that misses it kills the catalog. */
+const COMMAND_PATTERN = /^[a-z][a-zA-Z0-9-]*(?:\.[a-zA-Z][a-zA-Z0-9-]*)+$/u
+
+/**
+ * Expose the factory's closure-local helpers to the suite.
+ *
+ * The shipping file must keep returning exactly `{ inject, apply }`, so the
+ * transform is asserted to match before it is used — a silent miss would turn
+ * every internals test into a confusing `undefined`.
+ */
+const RETURN_STATEMENT = 'return { inject, apply }'
+const INTERNALS = [
+  'bucketOf',
+  'agoParts',
+  'agoText',
+  'tierOf',
+  'pendingKey',
+  'folderLabel',
+  'workspaceTitles',
+  'classify',
+  'domSafe',
+  'alignmentScore',
+  'rankCandidate',
+  'compareRows',
+  'comparePinned',
+  'createStore',
+]
+const instrumentedSource = clientSource.replace(
+  RETURN_STATEMENT,
+  `return { inject, apply, __internals: { ${INTERNALS.join(', ')} } }`,
+)
+
+//#region harness
+
+/** A React stub good enough for `apply`; the component is never rendered here. */
+function reactStub() {
+  // A small but real hooks runtime. The previous stub had a no-op `useState`, so
+  // the component could not be driven at all: every setState was discarded and
+  // no view or query was ever reachable. Slots persist across renders, effects
+  // run once per dependency change, and a setter marks the tree dirty so the
+  // harness can settle it.
+  const hooks = { slots: [], cursor: 0, pending: [], cleanups: [], dirty: false }
+  const sameDeps = (left, right) =>
+    Array.isArray(left) &&
+    Array.isArray(right) &&
+    left.length === right.length &&
+    left.every((value, index) => Object.is(value, right[index]))
+
+  const api = {
+    createElement: (...args) => ({ type: args[0], props: args[1] ?? {}, children: args.slice(2) }),
+    Fragment: Symbol('react.fragment'),
+    useRef: (initial) => {
+      const index = hooks.cursor++
+      if (hooks.slots[index] === undefined) hooks.slots[index] = { current: initial ?? null }
+      return hooks.slots[index]
+    },
+    useState: (initial) => {
+      const index = hooks.cursor++
+      if (hooks.slots[index] === undefined) {
+        hooks.slots[index] = typeof initial === 'function' ? initial() : initial
+      }
+      const set = (next) => {
+        const value = typeof next === 'function' ? next(hooks.slots[index]) : next
+        if (Object.is(value, hooks.slots[index])) return
+        hooks.slots[index] = value
+        hooks.dirty = true
+      }
+      return [hooks.slots[index], set]
+    },
+    useEffect: (run, deps) => {
+      const index = hooks.cursor++
+      const slot = hooks.slots[index]
+      if (slot === undefined || !sameDeps(slot, deps)) {
+        hooks.slots[index] = deps
+        hooks.pending.push(run)
+      }
+    },
+    useMemo: (compute, deps) => {
+      const index = hooks.cursor++
+      const slot = hooks.slots[index]
+      if (slot === undefined || !sameDeps(slot.deps, deps)) {
+        hooks.slots[index] = { deps, value: compute() }
+      }
+      return hooks.slots[index].value
+    },
+    useCallback: (callback, deps) => api.useMemo(() => callback, deps),
+    useSyncExternalStore: (_subscribe, getSnapshot) => getSnapshot(),
+  }
+  api.useLayoutEffect = api.useEffect
+  return { react: api, hooks }
+}
+
+/**
+ * Walk a rendered tree, expanding function components.
+ *
+ * Handlers must be re-read from a fresh tree after every state change: the
+ * closures captured in an older tree see the older state and would silently do
+ * nothing.
+ */
+function collect(node, extra, out = []) {
+  if (node === null || node === undefined || typeof node === 'boolean') return out
+  if (Array.isArray(node)) {
+    for (const child of node) collect(child, extra, out)
+    return out
+  }
+  if (typeof node !== 'object') return out
+  if (typeof node.type === 'function') {
+    collect(node.type({ ...extra, ...node.props }), extra, out)
+    return out
+  }
+  out.push(node)
+  for (const child of node.children ?? []) collect(child, extra, out)
+  return out
+}
+
+/**
+ * Mount a slot component and drive it.
+ *
+ * @returns `render()` for a settled tree, `nodes()` for every host element, and
+ *   `find(className)` for the first matching node.
+ */
+function mount(loaded, record, options = {}) {
+  const entryId = options.entryId ?? ROW_ID
+  const entry = record.slotRegistrations.find((row) => row.options.id === entryId)
+  assert.ok(entry !== undefined, `no registration for ${entryId}`)
+  const palette = entry.options.inject().palette
+
+  // Values included on purpose: a stub that renders only the key names makes
+  // every count assertion vacuous.
+  const translate = (key, params) => (params === undefined ? key : `${key}(${JSON.stringify(params)})`)
+
+  const extra = {
+    palette,
+    t: translate,
+    useSessions: (selector) => selector(options.sessions ?? { ids: [], byId: {}, projectionsBySession: {} }),
+    useSessionStatus: (selector) => selector(options.statuses ?? new Map()),
+    useWorkspaces: (selector) =>
+      selector({ items: [], archivedSessionIds: [], pinnedSessionIds: [], ...(options.workspaces ?? {}) }),
+  }
+
+  let tree = null
+  const render = () => {
+    for (let pass = 0; pass < 25; pass += 1) {
+      loaded.hooks.cursor = 0
+      loaded.hooks.pending = []
+      loaded.hooks.dirty = false
+      tree = entry.component(extra)
+      for (const run of loaded.hooks.pending) {
+        const cleanup = run()
+        if (typeof cleanup === 'function') loaded.hooks.cleanups.push(cleanup)
+      }
+      if (loaded.hooks.dirty === false) break
+    }
+    return tree
+  }
+
+  // EXACT class tokens, never substrings: `dsp-row` is a prefix of
+  // `dsp-rowmain`/`dsp-rowtitle`/`dsp-rowsub`, and `dsp-view` of `dsp-views`.
+  const hasClass = (node, className) =>
+    String(node.props.className ?? '')
+      .split(/\s+/)
+      .includes(className)
+  const nodes = () => collect(render(), extra)
+  const find = (className) => nodes().find((node) => hasClass(node, className)) ?? null
+  const all = (className) => nodes().filter((node) => hasClass(node, className))
+
+  return { render, nodes, find, all, palette, extra, entry }
+}
+
+/** Build a session-list snapshot from compact row descriptions. */
+function sessionsOf(rows) {
+  const byId = {}
+  const ids = []
+  for (const row of rows) {
+    ids.push(row.id)
+    byId[row.id] = {
+      displayTitle: row.title ?? row.id,
+      updatedAt: row.updatedAt ?? 1_000,
+      blank: row.blank ?? false,
+      origin: row.origin,
+      running: row.running ?? false,
+      cwd: row.cwd,
+    }
+  }
+  return { ids, byId, phase: 'ready', projectionsBySession: {} }
+}
+
+/**
+ * Evaluate `client.js` and hand back the plugin object it registers.
+ *
+ * @param options - timer control plus the values a mock context should report.
+ * @returns the plugin, the captured id, and spies over everything it touched.
+ */
+function loadPlugin(options = {}) {
+  const timers = []
+  const documentElement = { dataset: { platform: options.platform ?? 'darwin' } }
+  const appended = []
+  const removedStyles = []
+
+  const document = {
+    querySelector: () => null,
+    createElement: () => ({
+      dataset: {},
+      setAttribute() {},
+      set textContent(value) {
+        this._text = value
+      },
+      get textContent() {
+        return this._text
+      },
+      remove: () => removedStyles.push(true),
+    }),
+    head: { appendChild: (element) => appended.push(element) },
+    activeElement: null,
+    addEventListener() {},
+    removeEventListener() {},
+    querySelectorAll: () => [],
+    documentElement,
+  }
+
+  const sandbox = {
+    console,
+    document,
+    // The component asks `document.activeElement instanceof HTMLElement` before
+    // saving focus, so the global has to exist even when nothing is focused.
+    HTMLElement: class HTMLElement {},
+    // Without this the plugin falls back to a null controller and the abort
+    // path is unreachable, so the test would verify nothing.
+    AbortController,
+    Date,
+    Math,
+    Number,
+    Object,
+    Array,
+    Set,
+    Map,
+    JSON,
+    RegExp,
+    String,
+    Symbol,
+    Promise,
+    Error,
+    isNaN,
+    parseInt,
+    parseFloat,
+    undefined,
+    setTimeout: (fn, ms) => {
+      const handle = { fn, ms, cleared: false }
+      timers.push(handle)
+      return handle
+    },
+    clearTimeout: (handle) => {
+      if (handle !== undefined && handle !== null) handle.cleared = true
+    },
+    requestAnimationFrame: (fn) => {
+      fn()
+      return 1
+    },
+    cancelAnimationFrame: () => {},
+    window: {},
+  }
+  sandbox.globalThis = sandbox
+
+  let captured = null
+  sandbox.window.__ModuleLoader__ = {
+    load: (definition) => {
+      captured = definition
+    },
+  }
+
+  vm.createContext(sandbox)
+  new vm.Script(instrumentedSource, { filename: 'client.js' }).runInContext(sandbox)
+
+  assert.ok(captured !== null, 'client.js did not call window.__ModuleLoader__.load')
+  const stub = reactStub()
+  const plugin = captured.factory((name) => {
+    if (name === 'react') return stub.react
+    throw new Error(`client.js required "${name}", which the loader table may not carry`)
+  })
+
+  return {
+    plugin,
+    hooks: stub.hooks,
+    id: captured.id,
+    appended,
+    removedStyles,
+    timers,
+    flushTimers() {
+      const pending = timers.splice(0)
+      for (const handle of pending) if (!handle.cleared) handle.fn()
+    },
+  }
+}
+
+/**
+ * A recording client context.
+ *
+ * @param options - service overrides; each spy is appended to when used.
+ * @returns the context plus every recording it produced.
+ */
+function makeCtx(options = {}) {
+  const record = {
+    effects: [],
+    localeRegistrations: [],
+    slotInjections: [],
+    slotRegistrations: [],
+    fixed: [],
+    observers: [],
+    commands: [],
+    edits: [],
+    openSession: [],
+    archive: [],
+    unarchive: [],
+    pin: [],
+    unpin: [],
+    refresh: [],
+  }
+
+  const pinnedSessionIds = options.pinnedSessionIds ?? []
+
+  const configValue = options.configValue ?? {}
+  const services = {
+    sessions: {
+      refreshProjections(id) {
+        record.refresh.push(id)
+        return Promise.resolve()
+      },
+    },
+    workspaces: {
+      list: { getSnapshot: () => ({ pinnedSessionIds, archivedSessionIds: [] }) },
+      pinSession: (id) => {
+        record.pin.push(id)
+        return Promise.resolve()
+      },
+      unpinSession: (id) => {
+        record.unpin.push(id)
+        return Promise.resolve()
+      },
+    },
+    uiWorkspace: {
+      // The plugin pins through the UI-level service because it also maintains
+      // the sidebar's manual pin order; the lower-level controller does not.
+      pinSession: (id) => {
+        record.pin.push(id)
+        return Promise.resolve()
+      },
+      unpinSession: (id) => {
+        record.unpin.push(id)
+        return Promise.resolve()
+      },
+      openSession: (id) => record.openSession.push(id),
+      archiveSession: (id) => {
+        record.archive.push(id)
+        return Promise.resolve()
+      },
+      unarchiveSession: (id) => {
+        record.unarchive.push(id)
+        return Promise.resolve()
+      },
+    },
+  }
+
+  if (options.withShortcuts !== false) {
+    services.shortcuts = {
+      platform: options.platform ?? 'macos',
+      runtime: 'desktop',
+      registerFixed: (command) => {
+        record.fixed.push(command)
+        return () => record.fixed.push({ disposed: command.id })
+      },
+      observeFixedInput: (listener) => {
+        record.observers.push(listener)
+        return () => {}
+      },
+      register: (command) => {
+        record.commands.push(command)
+        return () => {}
+      },
+      edit: (edit, revision) => {
+        record.edits.push({ edit, revision })
+        return Promise.resolve({ status: 'saved' })
+      },
+      catalog: {
+        getSnapshot: () => options.catalog ?? [{ id: 'session.search', modified: false }],
+      },
+      config: { getSnapshot: () => ({ revision: options.revision ?? 'rev-1' }) },
+    }
+  }
+
+  const ctx = {
+    effect: (callback, name) => {
+      const dispose = callback()
+      record.effects.push({ name, dispose: typeof dispose })
+      return () => {
+        if (typeof dispose === 'function') dispose()
+      }
+    },
+    get: (name) => services[name],
+    inject: (deps, callback) => {
+      callback(ctx)
+      return () => {}
+    },
+    locale: {
+      register: (ns, dicts) => {
+        record.localeRegistrations.push({ ns, dicts })
+        return () => {}
+      },
+      bind: () => (key) => key,
+    },
+    configForms: {
+      get: () => ({
+        getSnapshot: () => ({ value: configValue }),
+        subscribe: () => () => {},
+      }),
+    },
+    slots: {
+      inject: (key, callback) => {
+        record.slotInjections.push(key)
+        const dispose = callback()
+        return () => {
+          if (typeof dispose === 'function') dispose()
+        }
+      },
+      register: (options_, component) => {
+        record.slotRegistrations.push({ options: options_, component })
+        return () => {}
+      },
+    },
+    sessions: services.sessions,
+    uiWorkspace: services.uiWorkspace,
+    workspaces: services.workspaces,
+  }
+
+  return { ctx, record, services }
+}
+
+/** Build one fixed-input event the observer would receive. */
+function keyEvent(overrides = {}) {
+  const consumed = { value: false }
+  return {
+    input: {
+      type: 'keydown',
+      gesture: {
+        code: 'KeyK',
+        meta: false,
+        control: false,
+        alt: false,
+        shift: false,
+        repeat: false,
+        ...overrides,
+      },
+      consume: () => {
+        consumed.value = true
+      },
+    },
+    consumed,
+  }
+}
+
+/** The inject face the slot would hand the component. */
+function paletteOf(record) {
+  const entry = record.slotRegistrations.find((row) => row.options.id === ROW_ID)
+  assert.ok(entry !== undefined, 'the palette entry must be registered')
+  return entry.options.inject().palette
+}
+
+/**
+ * Structural copy across the vm realm boundary.
+ *
+ * `assert.deepEqual` in strict mode checks prototypes, and an object literal
+ * built inside the vm carries the vm realm's `Object.prototype` — so a plain
+ * `{}` from the plugin is never deep-strict-equal to a `{}` written here.
+ */
+const plain = (value) => JSON.parse(JSON.stringify(value))
+
+//#endregion
+
+//#region bundle shape
+
+test('registers the package id and requires only react', () => {
+  const loaded = loadPlugin()
+  assert.equal(loaded.id, NS)
+  assert.deepEqual(plain(loaded.plugin.inject), [
+    'slots',
+    'locale',
+    'sessions',
+    'uiWorkspace',
+    'workspaces',
+    'configForms',
+  ])
+  assert.equal(typeof loaded.plugin.apply, 'function')
+})
+
+test('client.js imports no harness client package', () => {
+  const requires = [...clientSource.matchAll(/require\(\s*'([^']+)'\s*\)/g)].map((match) => match[1])
+  assert.deepEqual(requires, ['react'], `unexpected require(): ${requires.join(', ')}`)
+  assert.ok(
+    !clientSource.includes("from '@deepseek-ai/"),
+    'client.js must not import a harness package',
+  )
+})
+
+test('the instrumented return statement is present exactly once', () => {
+  const occurrences = clientSource.split(RETURN_STATEMENT).length - 1
+  assert.equal(occurrences, 1, 'the suite instruments this statement; keep it verbatim')
+})
+
+//#endregion
+
+//#region id agreement
+
+test('the Loader row id, the browser ROW_ID and the namespace agree', () => {
+  const patchId = patchSource.match(/^\s*- id: (\S+)$/m)?.[1]
+  assert.equal(patchId, ROW_ID, 'cordis.patch.yml id must equal the browser ROW_ID')
+  assert.equal(NS, pkg.name)
+  assert.match(clientSource, new RegExp(`const ROW_ID = '${ROW_ID}'`))
+})
+
+test('both shortcut command ids satisfy the protocol id pattern', () => {
+  assert.match(FIXED_ID, COMMAND_PATTERN)
+  assert.match(COMMAND_ID, COMMAND_PATTERN)
+  assert.match(clientSource, new RegExp(`const FIXED_ID = '${FIXED_ID.replace('.', '\\.')}'`))
+  assert.match(clientSource, new RegExp(`const COMMAND_ID = '${COMMAND_ID.replace('.', '\\.')}'`))
+})
+
+//#endregion
+
+//#region host half
+
+test('Config exposes the takeover switch as a volatile boolean, read as text', () => {
+  // The host half is read as TEXT, never imported: importing it needs
+  // `@deepseek-ai/schemastery`, which on a bare checkout resolves nowhere, so an
+  // import here makes the whole suite fail on CI. This is the house pattern.
+  assert.match(hostSource, /\.volatile\(\)/, 'volatile() is what makes the field page-writable')
+  assert.match(hostSource, /takeOver: z\.boolean\(\)\.default\(true\)\.volatile\(\)/)
+  assert.match(hostSource, /export const Config/)
+  assert.match(hostSource, /export function apply/)
+  // The plugin writes no shortcut preference, so a second switch would have
+  // nothing to configure.
+  assert.ok(!hostSource.includes('moveSidebarSearch'))
+})
+
+test('the package declares the client half the loader gate needs', () => {
+  assert.equal(pkg.dsh.client.platform, 'web')
+  assert.ok(pkg.exports['./client'], 'exports["./client"] is required for discovery')
+  assert.ok(pkg.dsh.bundle.patch, 'the bundle patch gives the row its home')
+})
+
+//#endregion
+
+//#region apply wiring
+
+test('registers both locale dictionaries with identical key sets', () => {
+  const { ctx, record } = makeCtx()
+  loadPlugin().plugin.apply(ctx)
+
+  assert.equal(record.localeRegistrations.length, 1)
+  const { ns, dicts } = record.localeRegistrations[0]
+  assert.equal(ns, NS)
+  assert.deepEqual(Object.keys(dicts).sort(), ['en', 'zh'])
+  const en = Object.keys(dicts.en).sort()
+  const zh = Object.keys(dicts.zh).sort()
+  assert.ok(en.length > 20, 'expected a real dictionary')
+  assert.deepEqual(zh, en, 'zh must cover exactly the en keys')
+})
+
+test('appends one marked style tag and removes it on teardown', () => {
+  const loaded = loadPlugin()
+  const { ctx, record } = makeCtx()
+  loaded.plugin.apply(ctx)
+
+  assert.equal(loaded.appended.length, 1)
+  const tag = loaded.appended[0]
+  assert.equal(tag.textContent.includes('.dsp-card'), true)
+  assert.ok(!/!important/.test(tag.textContent), 'no !important in plugin CSS')
+
+  for (const effect of record.effects) {
+    if (effect.name === `${NS}: styles`) assert.equal(effect.dispose, 'function')
+  }
+})
+
+test('registers into shell.overlay through slots.inject, not a bare register', () => {
+  const { ctx, record } = makeCtx()
+  loadPlugin().plugin.apply(ctx)
+
+  // Two entries in the same seat: the palette dialog and the action toast. The
+  // toast is separate on purpose so it outlives the palette.
+  assert.deepEqual(record.slotInjections, [SLOT, SLOT])
+  assert.deepEqual(
+    record.slotRegistrations.map((row) => row.options.id).sort(),
+    [ROW_ID, `${ROW_ID}.toast`],
+  )
+  const { options, component } = record.slotRegistrations.find((row) => row.options.id === ROW_ID)
+  assert.equal(options.name, SLOT)
+  assert.equal(options.id, ROW_ID)
+  assert.equal(options.locale, NS)
+  assert.equal(typeof options.order, 'number')
+  assert.equal(typeof component, 'function')
+  assert.deepEqual(Object.keys(options.inject()), ['palette'])
+})
+
+test('claims the chord with a fixed registration and an observer', () => {
+  const { ctx, record } = makeCtx()
+  loadPlugin().plugin.apply(ctx)
+
+  assert.equal(record.fixed.length, 1)
+  assert.equal(record.fixed[0].id, FIXED_ID)
+  assert.equal(record.fixed[0].group, 'application')
+  assert.deepEqual(plain(record.fixed[0].bindings), [{ code: 'KeyK', modifiers: ['primary'] }])
+  assert.equal(record.observers.length, 1)
+})
+
+test('the companion command is registered with no default binding', () => {
+  const { ctx, record } = makeCtx()
+  loadPlugin().plugin.apply(ctx)
+
+  assert.equal(record.commands.length, 1)
+  const command = record.commands[0]
+  assert.equal(command.id, COMMAND_ID)
+  assert.deepEqual(plain(command.defaults), {}, 'a default here would collide at registration')
+  assert.ok(command.regions.includes('editable'), 'the chord must work while typing')
+  assert.deepEqual(plain(command.modals), [ROW_ID])
+  assert.equal(command.resolve().status, 'handled')
+})
+
+test('every effect hands back a disposer', () => {
+  const { ctx, record } = makeCtx()
+  loadPlugin().plugin.apply(ctx)
+
+  assert.ok(record.effects.length >= 5, `expected several effects, saw ${record.effects.length}`)
+  for (const effect of record.effects) {
+    assert.equal(effect.dispose, 'function', `effect "${effect.name}" returned no disposer`)
+  }
+})
+
+//#endregion
+
+//#region hotkey behaviour
+
+test('the primary chord toggles the palette and consumes the gesture', () => {
+  const { ctx, record } = makeCtx()
+  loadPlugin().plugin.apply(ctx)
+  const palette = paletteOf(record)
+
+  const first = keyEvent({ meta: true })
+  record.observers[0](first.input)
+  assert.equal(first.consumed.value, true, 'the chord must be consumed')
+  assert.equal(palette.store.getSnapshot().open, true)
+
+  const second = keyEvent({ meta: true })
+  record.observers[0](second.input)
+  assert.equal(palette.store.getSnapshot().open, false, 'a second press closes it')
+  assert.equal(second.consumed.value, true)
+})
+
+test('control is accepted as primary off macOS', () => {
+  const { ctx, record } = makeCtx({ platform: 'windows' })
+  loadPlugin().plugin.apply(ctx)
+  const palette = paletteOf(record)
+
+  const event = keyEvent({ control: true })
+  record.observers[0](event.input)
+  assert.equal(palette.store.getSnapshot().open, true)
+})
+
+test('non-primary chords and repeats are ignored', () => {
+  const { ctx, record } = makeCtx()
+  loadPlugin().plugin.apply(ctx)
+  const palette = paletteOf(record)
+
+  const cases = [
+    { shift: true, meta: true },
+    { alt: true, meta: true },
+    { control: true, meta: true },
+    { meta: true, repeat: true },
+    {},
+  ]
+  for (const gesture of cases) {
+    const event = keyEvent(gesture)
+    record.observers[0](event.input)
+    assert.equal(event.consumed.value, false, `should ignore ${JSON.stringify(gesture)}`)
+    assert.equal(palette.store.getSnapshot().open, false)
+  }
+
+  record.observers[0]({ type: 'reset' })
+  assert.equal(palette.store.getSnapshot().open, false)
+
+  const wrongKey = keyEvent({ meta: true })
+  wrongKey.input.gesture.code = 'KeyJ'
+  record.observers[0](wrongKey.input)
+  assert.equal(palette.store.getSnapshot().open, false)
+})
+
+//#endregion
+
+//#region configuration
+
+test('takeOver false claims nothing and writes no preference', () => {
+  const { ctx, record } = makeCtx({ configValue: { takeOver: false } })
+  loadPlugin().plugin.apply(ctx)
+
+  assert.equal(record.fixed.length, 0, 'no fixed binding when opted out')
+  assert.equal(record.observers.length, 0)
+  assert.equal(record.edits.length, 0)
+  assert.equal(record.commands.length, 1, 'the editable companion command still registers')
+})
+
+test('the plugin never writes a shortcut preference', () => {
+  // The whole point of using a FIXED binding is that the user's keybinding file
+  // is untouched, so turning the plugin off restores the shipped default with
+  // nothing to undo. Any `edit()` call here would break that.
+  const { ctx, record } = makeCtx()
+  loadPlugin().plugin.apply(ctx)
+  assert.equal(record.fixed.length, 1, 'the chord is still claimed')
+  assert.deepEqual(record.edits, [], 'no preference may be written')
+})
+
+test('takeOver false claims nothing and writes nothing either', () => {
+  const { ctx, record } = makeCtx({ configValue: { takeOver: false } })
+  loadPlugin().plugin.apply(ctx)
+  assert.equal(record.fixed.length, 0)
+  assert.deepEqual(record.edits, [])
+})
+
+test('a missing shortcut service degrades instead of throwing', () => {
+  const { ctx, record } = makeCtx({ withShortcuts: false })
+  loadPlugin().plugin.apply(ctx)
+
+  assert.equal(record.fixed.length, 0)
+  assert.equal(record.observers.length, 0)
+  assert.ok(record.slotRegistrations.length >= 1, 'the palette still mounts')
+})
+
+//#endregion
+
+//#region pure derivation
+
+test('recency buckets break at calendar boundaries', () => {
+  const { bucketOf } = loadPlugin().plugin.__internals
+  const now = new Date(2026, 9, 11, 15, 30, 0).getTime()
+  const midnight = new Date(2026, 9, 11, 0, 0, 0).getTime()
+
+  assert.equal(bucketOf(midnight + 60_000, now), 'today')
+  assert.equal(bucketOf(midnight - 60_000, now), 'yesterday')
+  assert.equal(bucketOf(midnight - 3 * 86_400_000, now), 'week')
+  assert.equal(bucketOf(midnight - 20 * 86_400_000, now), 'month')
+  assert.equal(bucketOf(midnight - 200 * 86_400_000, now), 'older')
+  assert.equal(bucketOf(Number.NaN, now), 'older')
+  assert.equal(bucketOf(undefined, now), 'older')
+})
+
+test('elapsed-time labels step at the documented thresholds', () => {
+  const { agoParts } = loadPlugin().plugin.__internals
+  const now = 1_000_000_000_000
+  assert.equal(agoParts(now - 10_000, now).key, 'ago.now')
+  assert.deepEqual(plain(agoParts(now - 5 * 60_000, now)), { key: 'ago.min', n: 5 })
+  assert.deepEqual(plain(agoParts(now - 3 * 3_600_000, now)), { key: 'ago.hour', n: 3 })
+  assert.deepEqual(plain(agoParts(now - 2 * 86_400_000, now)), { key: 'ago.day', n: 2 })
+  assert.equal(agoParts(now - 90 * 86_400_000, now).key, 'ago.month')
+  assert.equal(agoParts(now - 800 * 86_400_000, now).key, 'ago.year')
+})
+
+test('activity tiers order needs-you before running before unread', () => {
+  const { tierOf } = loadPlugin().plugin.__internals
+  assert.equal(tierOf(false, 'approval', true), 0)
+  assert.equal(tierOf(true, undefined, true), 1)
+  assert.equal(tierOf(false, undefined, true), 2)
+  assert.equal(tierOf(false, undefined, false), 3)
+  assert.ok(tierOf(false, 'question', false) < tierOf(true, undefined, false))
+})
+
+test('pending kinds map to dictionary keys, unknown ones still count as waiting', () => {
+  const { pendingKey, tierOf } = loadPlugin().plugin.__internals
+  assert.equal(pendingKey('approval'), 'status.approval')
+  assert.equal(pendingKey('plan-review'), 'status.planReview')
+  assert.equal(pendingKey('question'), 'status.question')
+  // A future interaction kind must not silently demote a blocked session.
+  assert.equal(pendingKey('nonsense'), 'status.waiting')
+  assert.equal(tierOf(false, 'nonsense', false), 0)
+})
+
+test('folder labels handle posix, windows, trailing separators and blanks', () => {
+  const { folderLabel } = loadPlugin().plugin.__internals
+  assert.equal(folderLabel('/Users/me/work/repo'), 'repo')
+  assert.equal(folderLabel('/Users/me/work/repo/'), 'repo')
+  assert.equal(folderLabel('C:\\Users\\me\\repo'), 'repo')
+  assert.equal(folderLabel(''), '')
+  assert.equal(folderLabel(undefined), '')
+  assert.equal(folderLabel('/'), '')
+})
+
+test('workspace titles are first-writer-wins and fall back to the path', () => {
+  const { workspaceTitles } = loadPlugin().plugin.__internals
+  const map = workspaceTitles([
+    { title: 'Workbench', sessionIds: ['a', 'b'] },
+    { title: '', path: '/tmp/named-by-path', sessionIds: ['b', 'c'] },
+    { path: '/x/y', sessionIds: ['d'] },
+  ])
+  assert.equal(map.get('a'), 'Workbench')
+  assert.equal(map.get('b'), 'Workbench', 'the first listing owns the session')
+  assert.equal(map.get('c'), 'named-by-path')
+  assert.equal(map.get('d'), 'y')
+})
+
+test('the fuzzy matcher requires an ordered subsequence and ranks prefixes first', () => {
+  const { alignmentScore, rankCandidate } = loadPlugin().plugin.__internals
+  assert.equal(alignmentScore('session palette', 'sp'), alignmentScore('session palette', 'sp'))
+  assert.notEqual(alignmentScore('session palette', 'sp'), undefined)
+  assert.equal(alignmentScore('session palette', 'zz'), undefined)
+  assert.equal(alignmentScore('abc', 'abcd'), undefined, 'a longer query cannot match')
+
+  const prefix = rankCandidate(['Session palette'], 'sess')
+  const infix = rankCandidate(['my session palette'], 'sess')
+  assert.ok(prefix.prefix === true)
+  assert.equal(infix.prefix, false)
+  assert.ok(prefix.score > 0)
+
+  assert.equal(rankCandidate(['abc'], 'xyz'), undefined)
+  assert.equal(rankCandidate(['', 'abc'], 'ab').prefix, true)
+})
+
+test('dom-safe ids strip characters an attribute selector cannot use', () => {
+  const { domSafe } = loadPlugin().plugin.__internals
+  assert.equal(domSafe('0f8c1a2b-3d4e-5f60-7a8b-9c0d1e2f3a4b'), '0f8c1a2b-3d4e-5f60-7a8b-9c0d1e2f3a4b')
+  assert.equal(domSafe('a:b.c d'), 'a_b_c_d')
+})
+
+test('the store suppresses identical publishes but reports real changes', () => {
+  const { createStore } = loadPlugin().plugin.__internals
+  const store = createStore({ a: 1, b: 2 })
+  let notifications = 0
+  store.subscribe(() => {
+    notifications += 1
+  })
+
+  store.set({ a: 1, b: 2 })
+  assert.equal(notifications, 0, 'an equal snapshot must not publish')
+
+  store.update((state) => ({ ...state, b: 3 }))
+  assert.equal(notifications, 1)
+  assert.equal(store.getSnapshot().b, 3)
+
+  store.set(store.getSnapshot())
+  assert.equal(notifications, 1, 'the same reference must not publish')
+})
+
+//#endregion
+
+//#region preview pipeline
+
+test('projections are requested once, after a dwell, one at a time', async () => {
+  const loaded = loadPlugin()
+  const { ctx, record } = makeCtx()
+  loaded.plugin.apply(ctx)
+  const palette = paletteOf(record)
+
+  palette.ensureProjections('session-a')
+  palette.ensureProjections('session-a')
+  assert.equal(record.refresh.length, 0, 'nothing may fire before the dwell elapses')
+
+  loaded.flushTimers()
+  assert.deepEqual(record.refresh, ['session-a'], 'duplicate dwells collapse into one request')
+  assert.equal(palette.store.getSnapshot().pendingId, 'session-a')
+
+  await Promise.resolve()
+  await Promise.resolve()
+  assert.equal(palette.store.getSnapshot().pendingId, null)
+  assert.equal(palette.store.getSnapshot().triedId, 'session-a')
+
+  palette.ensureProjections('session-a')
+  loaded.flushTimers()
+  assert.deepEqual(record.refresh, ['session-a'], 'an already-requested row is never refetched')
+})
+
+test('a new dwell target cancels the pending one', () => {
+  const loaded = loadPlugin()
+  const { ctx, record } = makeCtx()
+  loaded.plugin.apply(ctx)
+  const palette = paletteOf(record)
+
+  palette.ensureProjections('session-a')
+  palette.ensureProjections('session-b')
+  loaded.flushTimers()
+
+  assert.deepEqual(record.refresh, ['session-b'], 'only the settled highlight is loaded')
+})
+
+test('notify raises a notice and clears it on the timer', () => {
+  const loaded = loadPlugin()
+  const { ctx, record } = makeCtx()
+  loaded.plugin.apply(ctx)
+  const palette = paletteOf(record)
+
+  assert.equal(palette.store.getSnapshot().notice, null)
+  palette.notify('hello')
+  assert.equal(palette.store.getSnapshot().notice.text, 'hello')
+
+  loaded.flushTimers()
+  assert.equal(palette.store.getSnapshot().notice, null)
+})
+
+test('archiveRow routes to the right workspace call', async () => {
+  const { ctx, record } = makeCtx()
+  loadPlugin().plugin.apply(ctx)
+  const palette = paletteOf(record)
+
+  palette.archiveRow('s1', false)
+  await Promise.resolve()
+  assert.deepEqual(record.archive, ['s1'])
+
+  palette.archiveRow('s2', true)
+  await Promise.resolve()
+  assert.deepEqual(record.unarchive, ['s2'])
+})
+
+test('openSession navigates and closes the palette', () => {
+  const { ctx, record } = makeCtx()
+  loadPlugin().plugin.apply(ctx)
+  const palette = paletteOf(record)
+
+  palette.store.update((state) => ({ ...state, open: true }))
+  palette.openSession('session-x')
+
+  assert.deepEqual(record.openSession, ['session-x'])
+  assert.equal(palette.store.getSnapshot().open, false)
+})
+
+//#endregion
+
+//#region row ordering
+
+test('activity leads the unqueried list, ahead of recency', () => {
+  const { compareRows } = loadPlugin().plugin.__internals
+  const rows = [
+    { id: 'idle-new', tier: 3, updatedAt: 500 },
+    { id: 'running-old', tier: 1, updatedAt: 100 },
+    { id: 'idle-old', tier: 3, updatedAt: 100 },
+    { id: 'needs-you', tier: 0, updatedAt: 10 },
+  ]
+  const sorted = rows
+    .slice()
+    .sort((left, right) => compareRows(left, right, false))
+    .map((row) => row.id)
+  assert.deepEqual(sorted, ['needs-you', 'running-old', 'idle-new', 'idle-old'])
+})
+
+test('a typed query outranks activity, which then only breaks ties', () => {
+  const { compareRows, rankCandidate } = loadPlugin().plugin.__internals
+  const needle = 'readme'
+  const make = (id, title, tier, updatedAt) => ({
+    id,
+    tier,
+    updatedAt,
+    rank: rankCandidate([title], needle),
+  })
+
+  const fuzzier = make('running-fuzzy', 'read the migration notes', 1, 900)
+  const exact = make('idle-exact', 'README rewrite', 3, 100)
+  assert.notEqual(fuzzier.rank, undefined, 'the fuzzy row must match, or the case proves nothing')
+  assert.equal(exact.rank.prefix, true)
+
+  const sorted = [fuzzier, exact]
+    .slice()
+    .sort((left, right) => compareRows(left, right, true))
+    .map((row) => row.id)
+  assert.equal(sorted[0], 'idle-exact', 'the better match wins even though it is idle')
+
+  const tied = [make('idle', 'readme', 3, 900), make('running', 'readme', 1, 100)]
+  const tiedSorted = tied
+    .slice()
+    .sort((left, right) => compareRows(left, right, true))
+    .map((row) => row.id)
+  assert.equal(tiedSorted[0], 'running', 'at equal quality, activity decides')
+})
+
+//#endregion
+
+//#region pinning
+
+test('the recency view ignores pins entirely', () => {
+  const { compareRows } = loadPlugin().plugin.__internals
+  const pinnedStale = { id: 'pinned-stale', tier: 3, pinned: true, pinIndex: 0, updatedAt: 1 }
+  const fresh = { id: 'fresh', tier: 3, pinned: false, pinIndex: 99, updatedAt: 1_000_000 }
+  const running = { id: 'running', tier: 1, pinned: false, pinIndex: 99, updatedAt: 1 }
+  const sorted = [pinnedStale, fresh, running]
+    .sort((left, right) => compareRows(left, right, false))
+    .map((row) => row.id)
+  // The drawer is a separate view, so a pin neither lifts a stale session above
+  // fresh ones nor demotes it: it only changes where you can find it.
+  assert.deepEqual(sorted, ['running', 'fresh', 'pinned-stale'])
+})
+
+test('a pin gets no search bonus either', () => {
+  const { compareRows, rankCandidate } = loadPlugin().plugin.__internals
+  const needle = 'alpha'
+  const rank = rankCandidate(['alpha notes'], needle)
+  const pinnedOlder = { id: 'pinned', tier: 3, pinned: true, pinIndex: 0, updatedAt: 5, rank }
+  const plainNewer = { id: 'plain', tier: 3, pinned: false, pinIndex: 9, updatedAt: 900, rank }
+  const sorted = [pinnedOlder, plainNewer]
+    .sort((left, right) => compareRows(left, right, true))
+    .map((row) => row.id)
+  assert.deepEqual(sorted, ['plain', 'pinned'], 'equal match quality, so recency decides')
+})
+
+test('the drawer follows pin order, most recently pinned first', () => {
+  const { comparePinned } = loadPlugin().plugin.__internals
+  const rows = [
+    { id: 'long-ago', pinIndex: 4, updatedAt: 999 },
+    { id: 'just-now', pinIndex: 0, updatedAt: 10 },
+    { id: 'middle', pinIndex: 2, updatedAt: 500 },
+  ]
+  const sorted = rows
+    .slice()
+    .sort((left, right) => comparePinned(left, right))
+    .map((row) => row.id)
+  // Pin order, not the clock: the drawer answers "what did I last keep?".
+  assert.deepEqual(sorted, ['just-now', 'middle', 'long-ago'])
+})
+
+test('togglePin calls the matching workspace RPC', async () => {
+  const { ctx, record } = makeCtx()
+  loadPlugin().plugin.apply(ctx)
+  const palette = paletteOf(record)
+
+  palette.togglePin('s1', false)
+  await Promise.resolve()
+  assert.deepEqual(record.pin, ['s1'])
+  assert.deepEqual(record.unpin, [])
+
+  palette.togglePin('s2', true)
+  await Promise.resolve()
+  assert.deepEqual(record.unpin, ['s2'])
+  assert.deepEqual(record.pin, ['s1'])
+})
+
+test('archiving a pinned session reports that the pin went with it', async () => {
+  const { ctx, record } = makeCtx({ pinnedSessionIds: ['s1'] })
+  loadPlugin().plugin.apply(ctx)
+  const palette = paletteOf(record)
+
+  palette.archiveRow('s1', false)
+  await Promise.resolve()
+  assert.equal(palette.store.getSnapshot().notice.text, 'archived.droppedPin')
+
+  palette.archiveRow('s2', false)
+  await Promise.resolve()
+  assert.equal(palette.store.getSnapshot().notice.text, 'archived.done')
+})
+
+test('every drawer string exists in both dictionaries', () => {
+  const { ctx, record } = makeCtx()
+  loadPlugin().plugin.apply(ctx)
+  const { dicts } = record.localeRegistrations[0]
+  for (const key of [
+    'view.recents',
+    'view.pinned',
+    'view.hint',
+    'pinned.empty',
+    'pinned.emptyHint',
+    'pinned.emptyMatch',
+    'preview.youNow',
+    'pin.done',
+    'unpin.done',
+    'pin.failed',
+    'archived.droppedPin',
+  ]) {
+    assert.ok(dicts.en[key], `en is missing ${key}`)
+    assert.ok(dicts.zh[key], `zh is missing ${key}`)
+  }
+  assert.ok(!('group.pinned' in dicts.en), 'the shelf label is gone with the shelf')
+  const footer = dicts.en['preview.footer']
+  assert.ok(footer.includes('tab'), 'the footer must advertise the drawer')
+  assert.ok(footer.includes('⇧P'), 'the footer must advertise the pin chord')
+  assert.ok(dicts.zh['preview.footer'].includes('tab'))
+  assert.ok(dicts.zh['preview.footer'].includes('⇧P'))
+})
+
+//#endregion
+
+
+//#region browse-list accounting
+
+test('the browse list classifies everything the sidebar hides', () => {
+  const { classify } = loadPlugin().plugin.__internals
+  assert.equal(classify({}, false), 'listed')
+  assert.equal(classify({ blank: true }, false), 'blank')
+  assert.equal(classify({ origin: 'subagent' }, false), 'subagent')
+  assert.equal(classify({}, true), 'archived')
+  // Precedence is deliberate: a placeholder is a placeholder, and a subagent run
+  // is reported as a subagent run even when it is also archived — neither is a
+  // conversation the reader could open.
+  assert.equal(classify({ blank: true, origin: 'subagent' }, true), 'blank')
+  assert.equal(classify({ origin: 'subagent' }, true), 'subagent')
+})
+
+test('the footer count is the browse list, not the raw store size', () => {
+  // `ids.length` counts rows the user can never see, so the count must come from
+  // the classification instead. This is the regression guard for "1531 sessions".
+  const source = readFileSync(join(root, 'client.js'), 'utf8')
+  assert.ok(!/count: ids\.length/.test(source), 'the footer must not report the raw store size')
+  assert.equal((source.match(/count: listed,/g) ?? []).length, 2, 'both views report it')
+  assert.ok(source.includes("t('palette.subagentHidden'"), 'the gap must be explained')
+})
+
+//#endregion
+
+//#region the archive view
+
+test('the view ring cycles recents, pinned and archived', () => {
+  const ring = clientSource.match(/const VIEWS = \[([^\]]+)\]/)
+  assert.ok(ring !== null, 'VIEWS must exist')
+  assert.deepEqual(
+    ring[1].split(',').map((part) => part.trim().replace(/'/g, '')),
+    ['recents', 'pinned', 'archived'],
+  )
+  // With three views Tab must cycle, not toggle.
+  assert.match(clientSource, /VIEWS\[\(index \+ step \+ VIEWS\.length\) % VIEWS\.length\]/)
+  assert.match(clientSource, /const step = event\.shiftKey \? -1 : 1/, '⇧Tab walks backwards')
+})
+
+test('the archive view carries its own strings in both locales', () => {
+  const { ctx, record } = makeCtx()
+  loadPlugin().plugin.apply(ctx)
+  const { dicts } = record.localeRegistrations[0]
+  for (const key of [
+    'view.archived',
+    'archived.empty',
+    'archived.emptyMatch',
+    'archived.emptyHint',
+    'archived.restoreHint',
+    'pin.archived',
+    'notice.undo',
+    'status.archived',
+    'archived.open',
+  ]) {
+    assert.ok(dicts.en[key], `en is missing ${key}`)
+    assert.ok(dicts.zh[key], `zh is missing ${key}`)
+  }
+})
+
+test('the archived count lives only in the drawer, not in the footer', () => {
+  // The drawer tab already reads "Archived N", so a footer copy is duplication —
+  // and it was also the thing that had to special-case itself while the drawer
+  // was open.
+  assert.ok(!clientSource.includes("t('palette.archivedHidden'"), 'not rendered anywhere')
+  assert.ok(!clientSource.includes("'palette.archivedHidden'"), 'and the key is gone too')
+  assert.match(clientSource, /t\('view\.archived', \{ n: model\.archivedTotal \}\)/)
+})
+
+test('an archived row is dimmed and says it cannot be opened', () => {
+  assert.match(clientSource, /dsp-rowdim/, 'archived rows must be visually set apart')
+  assert.match(
+    clientSource,
+    /activeRow\.archived\s*\n?\s*\? t\('archived\.restoreHint'\)/,
+    'the preview must explain the restriction rather than looking empty',
+  )
+  // The Enter guard has to fire before navigation, because openSession itself
+  // performs no archive check.
+  const activate = clientSource.slice(
+    clientSource.indexOf('const activate = React.useCallback'),
+    clientSource.indexOf('const onKeyDown = React.useCallback'),
+  )
+  assert.ok(activate.includes("t('archived.open')"), 'Enter on an archived row must refuse')
+  assert.ok(
+    activate.indexOf("t('archived.open')") < activate.indexOf('palette.openSession'),
+    'the refusal must come first',
+  )
+})
+
+//#endregion
+
+//#region rendered behaviour
+//
+// Everything below drives the REAL component through a settled hook runtime.
+// Before this region existed the component was never invoked anywhere, so view
+// switching, grouping, the archive guard, the footer counts, row dimming, the
+// chord handlers and the toast were all browser-verified only — and a mutation
+// battery showed the suite stayed green with the component replaced by a `throw`.
+
+/** One synthetic keyboard event for the card's handler. */
+function press(key, modifiers = {}) {
+  return {
+    key,
+    shiftKey: false,
+    ctrlKey: false,
+    altKey: false,
+    metaKey: false,
+    target: null,
+    repeat: false,
+    defaultPrevented: false,
+    preventDefault() {
+      this.defaultPrevented = true
+    },
+    ...modifiers,
+  }
+}
+
+/** Apply + mount + open in one step. */
+function paletteUi(options = {}) {
+  const loaded = loadPlugin()
+  const made = makeCtx(options.ctx)
+  loaded.plugin.apply(made.ctx)
+  const ui = mount(loaded, made.record, options)
+  ui.palette.store.update((state) => ({ ...state, open: true, epoch: 1 }))
+  ui.render()
+  return { loaded, ...made, ui }
+}
+
+test('an archived row is dimmed, refuses to open, and explains itself', () => {
+  const { record, ui } = paletteUi({
+    sessions: sessionsOf([{ id: 'live', title: 'Live' }, { id: 'old', title: 'Put away' }]),
+    workspaces: { archivedSessionIds: ['old'] },
+  })
+
+  // Recents lists the live row and must not contain the archived one.
+  const recents = ui.all('dsp-row')
+  assert.equal(recents.length, 1, 'recents lists exactly the live session')
+  assert.equal(recents[0].children[0].children[0].children[0], 'Live')
+
+  ui.find('dsp-card').props.onKeyDown(press('Tab', { shiftKey: true })) // backwards -> archived
+  const row = ui.find('dsp-row')
+  assert.ok(row !== null, 'the archived drawer shows it')
+  assert.match(row.props.className, /dsp-rowdim/, 'and dims it')
+
+  // Re-read the handler from the SETTLED tree; the earlier tree's closures hold
+  // the earlier state.
+  ui.find('dsp-row').props.onClick()
+  assert.deepEqual(record.openSession, [], 'an archived session must not open')
+  assert.equal(ui.palette.store.getSnapshot().notice.text, 'archived.open')
+})
+
+test('the footer reports the browse list, not the raw store', () => {
+  const { ui } = paletteUi({
+    sessions: sessionsOf([
+      { id: 'a', title: 'Real one' },
+      { id: 'sub', title: 'Subagent run', origin: 'subagent' },
+      { id: 'blank', title: 'New session', blank: true },
+      { id: 'old', title: 'Put away' },
+    ]),
+    workspaces: { archivedSessionIds: ['old'] },
+  })
+  const footer = ui.find('dsp-footer').children[0].children
+    .map((child) => (typeof child === 'string' ? child : ''))
+    .filter(Boolean)
+    .join(' ')
+  assert.match(footer, /palette\.count\(\{"n":1\}\)/, 'the browse count is 1, not the raw 4')
+  assert.match(footer, /palette\.subagentHidden\(\{"n":1\}\)/, 'the subagent run is explained')
+  assert.ok(!footer.includes('archivedHidden'), 'the drawer carries the archived count instead')
+})
+
+test('the pinned badge counts pins the query does not match', () => {
+  const { ui } = paletteUi({
+    sessions: sessionsOf([{ id: 'p', title: 'Pinned thing' }, { id: 'x', title: 'Other' }]),
+    workspaces: { pinnedSessionIds: ['p'] },
+  })
+  const label = () => {
+    const button = ui.all('dsp-view')[1]
+    return button.children.join('')
+  }
+  assert.match(label(), /view\.pinned\(\{"n":1\}\)/, 'the badge carries the live pin count')
+
+  const input = ui.find('dsp-input')
+  input.props.onChange({ target: { value: 'zzzz' } })
+  assert.equal(ui.find('dsp-row'), null, 'the query matches nothing')
+  // The whole point of the drawer is the reminder that something is in it, so the
+  // badge must survive a query that excludes every pinned row.
+  assert.match(label(), /view\.pinned\(\{"n":1\}\)/, 'the badge STILL reports 1 after a query')
+})
+
+test('Tab cycles the view ring and ⇧Tab walks it back', () => {
+  const { ui } = paletteUi({
+    sessions: sessionsOf([{ id: 'a', title: 'A' }]),
+  })
+  const pressed = () => ui.all('dsp-view').findIndex((n) => n.props['aria-pressed'] === 'true')
+  assert.equal(pressed(), 0, 'recents')
+  ui.find('dsp-card').props.onKeyDown(press('Tab'))
+  assert.equal(pressed(), 1, 'pinned')
+  ui.find('dsp-card').props.onKeyDown(press('Tab'))
+  assert.equal(pressed(), 2, 'archived')
+  ui.find('dsp-card').props.onKeyDown(press('Tab'))
+  assert.equal(pressed(), 0, 'wraps to recents')
+  ui.find('dsp-card').props.onKeyDown(press('Tab', { shiftKey: true }))
+  assert.equal(pressed(), 2, '⇧Tab goes backwards')
+})
+
+test('⌘⇧⌫ archives the highlighted row, and restores it from the drawer', async () => {
+  const { record, ui } = paletteUi({
+    sessions: sessionsOf([{ id: 'live', title: 'Live' }, { id: 'old', title: 'Put away' }]),
+    workspaces: { archivedSessionIds: ['old'] },
+  })
+  const chord = press('Backspace', { shiftKey: true, metaKey: true })
+
+  ui.find('dsp-card').props.onKeyDown(chord)
+  assert.deepEqual(record.archive, ['live'], 'the HIGHLIGHTED row, not the open one')
+  assert.equal(chord.defaultPrevented, true)
+  // The notice arrives from the RPC's `.then`, so it needs a tick.
+  await Promise.resolve()
+  await Promise.resolve()
+  assert.match(ui.palette.store.getSnapshot().notice.text, /archived\.done/)
+
+  // And from the drawer the same chord restores.
+  ui.find('dsp-card').props.onKeyDown(press('Tab', { shiftKey: true }))
+  ui.find('dsp-card').props.onKeyDown(press('Backspace', { shiftKey: true, metaKey: true }))
+  await Promise.resolve()
+  assert.deepEqual(record.unarchive, ['old'])
+})
+
+test('a row click does not steal focus from the dialog', () => {
+  const { ui } = paletteUi({ sessions: sessionsOf([{ id: 'a', title: 'A' }]) })
+  const row = ui.find('dsp-row')
+  const event = press('mousedown')
+  row.props.onMouseDown(event)
+  // Without this the click moves focus to <body> and every shortcut dies, on a
+  // path that deliberately keeps the palette open.
+  assert.equal(event.defaultPrevented, true)
+})
+
+test('the list is capped and says so', () => {
+  const many = Array.from({ length: 260 }, (_, index) => ({
+    id: `s${index}`,
+    title: `Session ${index}`,
+    updatedAt: 1_000_000 - index,
+  }))
+  const { ui } = paletteUi({ sessions: sessionsOf(many) })
+  assert.equal(ui.all('dsp-row').length, 200, 'ROW_LIMIT caps the rendered rows')
+  assert.match(ui.find('dsp-footer').children[0].children.map((c) => String(c ?? '')).join(' '), /palette\.truncated/)
+})
+
+test('the toast outlives the palette and offers a working Undo', () => {
+  const { loaded, record } = (() => {
+    const l = loadPlugin()
+    const m = makeCtx()
+    l.plugin.apply(m.ctx)
+    return { loaded: l, record: m.record }
+  })()
+  const ui = mount(loaded, record, { entryId: `${ROW_ID}.toast` })
+
+  assert.equal(ui.render(), null, 'nothing until there is something to say')
+
+  let undone = 0
+  ui.palette.notify('archived.done', () => {
+    undone += 1
+  })
+  const toast = ui.find('dsp-toast')
+  assert.ok(toast !== null, 'the toast renders outside the palette card')
+  assert.equal(toast.props.role, 'status', 'and is announced politely')
+
+  ui.find('dsp-toastbtn').props.onClick()
+  assert.equal(undone, 1, 'Undo runs the inverse action')
+  assert.equal(ui.render(), null, 'and dismisses the toast')
+})
+
+//#endregion
+
+
