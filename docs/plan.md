@@ -737,11 +737,14 @@ Config 开关、`settings.general.item` 一行、`⌘⇧A` 归档、`Restore All
 
 探针是一个独立的 bundle：`probe/`，已装、已实测、依赖已从 profile 卸载。
 
-> **一处更正**：早先这里写的是"环境已还原"，**不准确**。探针的 `link:` 依赖确实删掉了，
-> 但 profile 的 `cordis.patch.yml` 里仍留着一行孤立的 `- id: session-palette-probe`
-> （`disabled: false`，没有 `name`）。按宿主 `applyEntryPatches` 的代码推导，每次 profile
-> 加载都会打一条 `patch: entry "session-palette-probe" not found`。清它需要用户授权，
-> 因为它在我们工作区之外。
+> **一处更正（已由用户清理）**：早先这里写的是"环境已还原"，**不准确**——探针的 `link:`
+> 依赖确实删掉了，但 profile 的 `cordis.patch.yml` 里留下一行孤立的
+> `- id: session-palette-probe`（`disabled: false`，无 `name`）。按宿主 `applyEntryPatches`
+> 的代码推导，那会让每次 profile 加载都打一条
+> `patch: entry "session-palette-probe" not found`。用户已手工删除该行。
+>
+> **值得记住的一般结论**：`plugin_manager` 的 `remove_bundle` **不会**回滚它写入 profile
+> patch 的启用记录。卸载一个插件后，检查 `cordis.patch.yml` 里有没有剩下孤立的 `- id:`。
 它本身不写任何用户偏好 —— 装/卸只影响它自己。
 
 **为什么做成一个而不是三个**：三个问题的答案都靠面板读实时状态。一次安装、一个面板、
