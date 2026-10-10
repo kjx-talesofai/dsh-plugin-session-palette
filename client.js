@@ -13,8 +13,9 @@
  *
  *   A FIXED shortcut binding — how ⌘K is taken. `ctx.shortcuts.register` refuses
  *   any default that overlaps `session.search`'s (`Conflicting shortcut
- *   defaults`), and there is no unregister API, so the chord cannot be claimed by
- *   registering a command. `registerFixed` performs no conflict check; the fixed
+ *   defaults`), and registration happens once against defaults that another
+ *   plugin already owns, so the chord cannot be claimed by registering a command.
+ *   (Disposers do exist — the obstacle is the conflict check, not a missing API.) `registerFixed` performs no conflict check; the fixed
  *   binding then makes `session.search` *conflicted*, which is what removes
  *   `meta+KeyK` from the Electron main process's natively intercepted set,
  *   letting the DOM keydown survive to this page. The fixed observer runs before
@@ -643,6 +644,8 @@ window.__ModuleLoader__.load({
 .dsp-shimmer{height:12px;margin:8px 0;border-radius:4px;background:var(--dsw-alias-bg-skeleton);animation:dsp-pulse 1.4s ease-in-out infinite}
 .dsp-shimmer-short{width:60%}
 @keyframes dsp-pulse{0%,100%{opacity:.5}50%{opacity:1}}
+@media (max-width:700px){.dsp-pane{display:none}}
+@media (max-width:520px){.dsp-scrim{padding:24px 12px}.dsp-card{max-height:min(70vh,520px)}}
 @media (prefers-reduced-motion:reduce){.dsp-shimmer{animation:none}}
 `
 
@@ -710,6 +713,9 @@ window.__ModuleLoader__.load({
         setQuery('')
         setView('recents')
         setManualActiveId(null)
+        // The toast outlives the palette by design, so the previous action's
+        // message would otherwise still be sitting there on reopen.
+        palette.dismissNotice()
         setNow(Date.now())
         restoreRef.current =
           typeof document !== 'undefined' && document.activeElement instanceof HTMLElement
@@ -717,11 +723,15 @@ window.__ModuleLoader__.load({
             : null
         const frame = requestAnimationFrame(() => inputRef.current?.focus())
         return () => cancelAnimationFrame(frame)
-      }, [open, state.epoch])
+      }, [open, state.epoch, palette])
 
-      // Escape closes only the foreground layer. The host arbitrates the same way
-      // (`closeTopModal` compares against the document's last modalSelector
-      // match), so a dialog stacked above the palette keeps its own Escape.
+      // Escape closes only the foreground layer. The host's real arbiter is
+      // `useModalLayer`, which owns its own layer stack — and this palette is NOT
+      // registered in it, so `closeTopModal` can never close the palette. The
+      // check below is therefore our own copy of the same *rule* (compare against
+      // the document's last modalSelector match), which agrees with the host only
+      // because every shipped modal is portalled to the body, making DOM order and
+      // visual order coincide.
       React.useEffect(() => {
         if (!open) return undefined
         const onKeyDown = (event) => {
@@ -788,7 +798,9 @@ window.__ModuleLoader__.load({
 
         for (const id of ids) {
           const row = byId[id]
-          if (row === undefined) continue
+          // `== null` on purpose: a null row would throw out of classify() and
+          // take the whole slot entry down with it.
+          if (row === undefined || row === null) continue
           const kind = classify(row, archivedIds.has(id))
           if (kind === 'subagent') {
             subagentHidden += 1
@@ -1090,7 +1102,11 @@ window.__ModuleLoader__.load({
 
       const lastTurn =
         outline === null || outline.length === 0 ? null : outline[outline.length - 1]
-      const pendingOutline = state.pendingId !== null && state.pendingId === activeId
+      // Only a LACK of data justifies a placeholder. Testing `pendingId` alone
+      // meant any in-flight refresh hid the turn text already on screen — and
+      // with no timeout anywhere, a refresh that never settled hid it forever.
+      const pendingOutline =
+        state.pendingId !== null && state.pendingId === activeId && outline === null
       const exhausted = !pendingOutline && state.triedId === activeId
 
       const rowNodes = []

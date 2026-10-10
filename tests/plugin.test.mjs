@@ -1420,3 +1420,60 @@ test('the toast outlives the palette and offers a working Undo', () => {
 //#endregion
 
 
+
+//#region last-turn loading
+
+test('an in-flight refresh does not hide a turn that is already loaded', () => {
+  const { ui } = paletteUi({
+    sessions: {
+      ids: ['a'],
+      byId: { a: { displayTitle: 'A', updatedAt: 1000, blank: false, running: false } },
+      phase: 'ready',
+      projectionsBySession: {
+        a: { values: { turnOutline: [{ turn: 1, prompt: 'PROMPT_TEXT', response: 'RESPONSE_TEXT' }] } },
+      },
+    },
+  })
+  // Pretend a refresh is in flight for the row we are looking at. With the old
+  // `pendingId`-only test this hid the turn text behind a shimmer.
+  ui.palette.store.update((state) => ({ ...state, pendingId: 'a' }))
+  const strings = ui
+    .nodes()
+    .flatMap((node) => node.children.filter((child) => typeof child === 'string'))
+
+  assert.ok(strings.includes('PROMPT_TEXT'), 'the loaded turn is rendered')
+  assert.ok(!strings.includes('preview.loading'), 'and no placeholder covers it')
+})
+
+test('a null row does not take the whole slot entry down', () => {
+  const { ui } = paletteUi({
+    sessions: {
+      ids: ['broken', 'fine'],
+      byId: {
+        broken: null,
+        fine: { displayTitle: 'Fine', updatedAt: 5, blank: false, running: false },
+      },
+      phase: 'ready',
+      projectionsBySession: {},
+    },
+  })
+  const titles = ui
+    .all('dsp-rowtitle')
+    .flatMap((node) => node.children.filter((child) => typeof child === 'string'))
+  assert.deepEqual(titles, ['Fine'], 'the good row still renders')
+})
+
+test('reopening does not greet you with the last action\'s message', () => {
+  const { ui } = paletteUi({ sessions: sessionsOf([{ id: 'a', title: 'A' }]) })
+  ui.palette.notify('archived.done')
+  assert.equal(ui.palette.store.getSnapshot().notice.text, 'archived.done')
+
+  // Close and reopen, the way ⌘K ⌘K does.
+  ui.palette.close()
+  ui.render()
+  ui.palette.store.update((state) => ({ ...state, open: true, epoch: 2 }))
+  ui.render()
+  assert.equal(ui.palette.store.getSnapshot().notice, null, 'no stale toast on reopen')
+})
+
+//#endregion
