@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "会话面板",
-    "description": "⌘K 打开 Spotlight 式的会话面板；⌘⇧R 或双击标题就地给会话改名。"
+    "description": "⌘K 打开 Spotlight 式的会话面板；就地改名；按标题、工作区名或目录路径定位会话。"
   }
 }

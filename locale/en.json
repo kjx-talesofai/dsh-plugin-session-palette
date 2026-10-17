@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "Session Palette",
-    "description": "Cmd+K opens a Spotlight-style session palette, and a session renames in place with ⌘⇧R or a double click on its title."
+    "description": "Cmd+K opens a Spotlight-style session palette, renames in place, and finds a session by title, workspace name or directory."
   }
 }
