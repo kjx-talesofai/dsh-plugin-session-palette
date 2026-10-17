@@ -1,6 +1,6 @@
 {
   "name": "dsh-plugin-session-palette",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "type": "module",
   "description": "Make Cmd+K open a Spotlight-style session palette instead of focusing the sidebar search box, with in-place renaming and up to three tags per session.",
   "license": "MIT",

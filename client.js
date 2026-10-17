@@ -741,8 +741,10 @@ window.__ModuleLoader__.load({
         'rename.unavailable': 'the session did not respond',
         'tags.aria': 'Tags',
         'tags.hint': '⏎ toggle · esc done',
-        'tags.bar': 'Tagging “{title}” · {n}/3',
-        'mode.locked': 'the list is locked while this is open',
+        'tags.add': 'tag',
+        'tags.filterPlaceholder': 'Filter or create a tag…',
+        'tags.editorHint': '⏎ toggles · ↑↓ moves · esc closes',
+        'tags.counter': '{n}/3',
         'tags.empty': 'No tags yet',
         'tags.emptyHint': 'Type a name and press ⏎ to create it.',
         'tags.create': 'Create “{label}”',
@@ -824,8 +826,10 @@ window.__ModuleLoader__.load({
         'rename.unavailable': '会话没有响应',
         'tags.aria': '标签',
         'tags.hint': '⏎ 切换 · esc 完成',
-        'tags.bar': '正在打标签：「{title}」 · {n}/3',
-        'mode.locked': '这个模式下列表是锁的',
+        'tags.add': '标签',
+        'tags.filterPlaceholder': '筛选或新建标签…',
+        'tags.editorHint': '⏎ 切换 · ↑↓ 移动 · esc 关闭',
+        'tags.counter': '{n}/3',
         'tags.empty': '还没有标签',
         'tags.emptyHint': '输入一个名字，按 ⏎ 新建。',
         'tags.create': '新建「{label}」',
@@ -925,7 +929,16 @@ window.__ModuleLoader__.load({
 .dsp-row[data-dsp-target="true"]{box-shadow:inset 2px 0 0 var(--dsw-alias-state-business-primary)}
 .dsp-row[data-dsp-frozen="true"]{cursor:default}
 .dsp-tagdot{width:6px;height:6px;border-radius:999px;flex:none}
-.dsp-taglist{display:flex;flex-direction:column;gap:2px;margin-top:10px}
+/* The tag line is part of the preview, not a mode: chips (filters), one button
+   that opens the editor, and how full the session is. */
+.dsp-tagline{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin-top:10px}
+.dsp-addtag{flex:none;padding:1px 8px;border:1px dashed var(--dsw-alias-border-l3);border-radius:999px;background:0 0;color:var(--dsw-alias-label-tertiary);font-size:11px;line-height:16px;cursor:pointer}
+.dsp-addtag:hover{border-color:var(--dsw-alias-border-l4);background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-secondary)}
+.dsp-addtag[aria-expanded="true"]{border-style:solid;border-color:var(--dsw-alias-state-business-primary);color:var(--dsw-alias-label-primary)}
+.dsp-tageditor{margin-top:8px;padding:8px;border:1px solid var(--dsw-alias-border-l2);border-radius:var(--dsw-radius-md);background:var(--dsw-alias-bg-layer-1)}
+.dsp-taginput{box-sizing:border-box;width:100%;padding:3px 6px;border:1px solid var(--dsw-alias-border-l4);border-radius:var(--dsw-radius-sm);background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary);font-family:inherit;font-size:12px;line-height:18px;outline:none}
+.dsp-taginput:focus{border-color:var(--dsw-alias-state-business-primary)}
+.dsp-taglist{display:flex;flex-direction:column;gap:2px;margin-top:6px;max-height:240px;overflow-y:auto}
 .dsp-tagrow{display:flex;align-items:center;gap:8px;padding:5px 8px;border-radius:var(--dsw-radius-sm);cursor:pointer;font-size:13px;line-height:18px}
 .dsp-tagrow:hover{background:var(--dsw-alias-interactive-bg-hover)}
 .dsp-tagrow[data-dsp-tagactive="true"]{background:var(--dsw-alias-interactive-bg-hover-solid)}
@@ -1022,13 +1035,19 @@ window.__ModuleLoader__.load({
       const [rename, setRename] = React.useState(null)
 
       /**
-       * The open tag picker, or null: `{ draft, cursor }`.
+       * The open tag editor, or null: `{ id, draft, cursor }`.
        *
-       * A mode of the same field, like rename, but it keeps the session list on
-       * screen: the picker replaces the preview pane, so you can still see (and
-       * click) which row you are tagging.
+       * NOT a mode of the search field. The first version did that and it was
+       * wrong in a way the user felt immediately: the field that searches sessions
+       * started filtering tags, and the list had to be frozen to keep the target
+       * from moving. A tag editor belongs to the item it edits, so this one lives in
+       * the preview pane, next to the session's own tags, with its own input and its
+       * own list. The search field never changes meaning, and nothing is locked:
+       * `id` is the session the editor was opened on.
        */
-      const [tagMode, setTagMode] = React.useState(null)
+      const [tagEditor, setTagEditor] = React.useState(null)
+
+      const tagInputRef = React.useRef(null)
 
       /** Tag ids the list is filtered by; several mean "any of these". */
       const [tagFilter, setTagFilter] = React.useState([])
@@ -1052,7 +1071,7 @@ window.__ModuleLoader__.load({
         // A rename or a tag picker that was open when the palette closed has no
         // target any more, and a filter is part of the view it was set in.
         setRename(null)
-        setTagMode(null)
+        setTagEditor(null)
         setTagFilter([])
         // The toast outlives the palette by design, so the previous action's
         // message would otherwise still be sitting there on reopen.
@@ -1074,7 +1093,7 @@ window.__ModuleLoader__.load({
         if (tagRequest === null || tagRequest === undefined || !open) return
         palette.clearTagRequest()
         setManualActiveId(tagRequest.id)
-        setTagMode({ draft: '', cursor: 0 })
+        setTagEditor({ id: tagRequest.id, draft: '', cursor: 0 })
       }, [tagRequest, open, palette])
 
       // Escape closes only the foreground layer. The host's real arbiter is
@@ -1389,20 +1408,13 @@ window.__ModuleLoader__.load({
       const activate = React.useCallback(
         (row, isArchived) => {
           if (row === null) return
-          // While tagging, a click retargets the picker: opening the session would
-          // throw away the edit the click was meant to aim at.
-          if (tagMode !== null) {
-            setManualActiveId(row.id)
-            inputRef.current?.focus()
-            return
-          }
           if (isArchived) {
             palette.notify(t('archived.open'))
             return
           }
           palette.openSession(row.id)
         },
-        [palette, t, tagMode],
+        [palette, t],
       )
 
       /**
@@ -1468,20 +1480,39 @@ window.__ModuleLoader__.load({
       }, [rename, renameRow, palette, cancelRename])
 
       /**
-       * Open the tag picker on the highlighted row.
+       * Open (or close) the tag editor for the highlighted session.
        *
-       * Entering is allowed even when the Host cannot store tags yet: the picker
-       * then explains that instead of doing nothing, which is the difference
-       * between a feature that is not ready and one that appears broken.
+       * Opening is allowed even when the Host cannot store tags yet: the editor then
+       * explains that instead of doing nothing, which is the difference between a
+       * feature that is not ready and one that looks broken.
        */
-      const enterTagMode = React.useCallback(() => {
-        if (activeRow === null) return
-        setTagMode({ draft: '', cursor: 0 })
+      const toggleTagEditor = React.useCallback(() => {
+        setTagEditor((current) => {
+          if (current !== null) return null
+          if (activeRow === null) return null
+          return { id: activeRow.id, draft: '', cursor: 0 }
+        })
       }, [activeRow])
 
-      const exitTagMode = React.useCallback(() => {
-        setTagMode(null)
+      const closeTagEditor = React.useCallback(() => {
+        setTagEditor(null)
+        // Back to where the keyboard came from: the search field.
+        inputRef.current?.focus()
       }, [])
+
+      // An editor belongs to the row it was opened on. If the highlight moves — the
+      // mouse, a new query — it closes rather than quietly editing a different
+      // session, which is the failure the previous version was blamed for.
+      React.useEffect(() => {
+        if (tagEditor === null) return
+        if (activeRow !== null && activeRow.id === tagEditor.id) return
+        setTagEditor(null)
+      }, [tagEditor, activeRow])
+
+      React.useEffect(() => {
+        if (tagEditor === null) return
+        tagInputRef.current?.focus?.()
+      }, [tagEditor === null ? null : tagEditor.id])
 
       /**
        * What Enter would act on, in order.
@@ -1490,9 +1521,9 @@ window.__ModuleLoader__.load({
        * the exact label of a tag you already have toggles it instead of creating a
        * near-duplicate.
        */
-      const tagDraft = tagMode === null ? '' : tagMode.draft
+      const tagDraft = tagEditor === null ? '' : tagEditor.draft
       const tagOptions = React.useMemo(() => {
-        if (tagMode === null) return []
+        if (tagEditor === null) return []
         const needle = tagDraft.trim().toLowerCase()
         const options = []
         const exact = tags.vocabulary.some((tag) => tag.label.toLowerCase() === needle)
@@ -1502,16 +1533,16 @@ window.__ModuleLoader__.load({
           options.push({ kind: 'tag', tag })
         }
         return options
-      }, [tagMode, tagDraft, tags.vocabulary])
+      }, [tagEditor, tagDraft, tags.vocabulary])
 
       const tagCursor =
-        tagMode === null ? 0 : Math.min(tagMode.cursor, Math.max(0, tagOptions.length - 1))
+        tagEditor === null ? 0 : Math.min(tagEditor.cursor, Math.max(0, tagOptions.length - 1))
 
       const moveTagCursor = React.useCallback(
         (delta) => {
           const count = tagOptions.length
           if (count === 0) return
-          setTagMode((current) => {
+          setTagEditor((current) => {
             if (current === null) return current
             const index = Math.min(current.cursor, count - 1)
             return { ...current, cursor: (index + delta + count) % count }
@@ -1522,21 +1553,23 @@ window.__ModuleLoader__.load({
 
       const applyTagOption = React.useCallback(
         (option) => {
-          if (option === undefined || option === null || activeRow === null) return
+          if (option === undefined || option === null || tagEditor === null) return
           if (option.kind === 'create') {
-            palette.createTag(option.label, activeRow.id)
+            palette.createTag(option.label, tagEditor.id)
             // Clearing the draft is what makes the new tag immediately visible as a
             // ticked row, rather than leaving the text that created it.
-            setTagMode({ draft: '', cursor: 0 })
+            setTagEditor((current) =>
+              current === null ? current : { ...current, draft: '', cursor: 0 },
+            )
             return
           }
-          palette.toggleTag(activeRow.id, option.tag.id)
+          palette.toggleTag(tagEditor.id, option.tag.id)
         },
-        [activeRow, palette],
+        [tagEditor, palette],
       )
 
       const pickTag = React.useCallback(() => {
-        // Pressing Enter in a picker that cannot save says why, rather than doing
+        // Pressing Enter in an editor that cannot save says why, rather than doing
         // nothing: the pane already explains it, and this is the same answer for
         // someone who is typing rather than reading.
         if (tags.ready !== true) {
@@ -1558,39 +1591,10 @@ window.__ModuleLoader__.load({
 
       const onKeyDown = React.useCallback(
         (event) => {
-          if (tagMode !== null) {
-            // The chord that opened the picker closes it, so the gesture is a
-            // toggle in both directions.
-            if (
-              (event.key === 't' || event.key === 'T') &&
-              event.shiftKey &&
-              (event.metaKey || event.ctrlKey) &&
-              !event.altKey
-            ) {
-              event.preventDefault()
-              exitTagMode()
-              return
-            }
-            if (event.key === 'Escape') {
-              event.preventDefault()
-              event.stopPropagation()
-              exitTagMode()
-              return
-            }
-            if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
-              event.preventDefault()
-              moveTagCursor(event.key === 'ArrowDown' ? 1 : -1)
-              return
-            }
-            if (event.key === 'Enter') {
-              event.preventDefault()
-              if (!composingRef.current && event.nativeEvent?.isComposing !== true) pickTag()
-              return
-            }
-            // Tab, Home and End stay the text field's: the picker has no ring of
-            // its own to cycle.
-            return
-          }
+          // The tag editor owns its own input, so its keys must not reach the
+          // list: Tab here would cycle the view ring, and ↑↓ would move a
+          // highlight behind the editor.
+          if (tagEditor !== null && event.target === tagInputRef.current) return
           if (rename !== null) {
             // The editor owns the field while it is open. Tab, the arrows, Home
             // and End are text editing again, and the list must not move under
@@ -1702,7 +1706,7 @@ window.__ModuleLoader__.load({
             !event.altKey
           ) {
             event.preventDefault()
-            enterTagMode()
+            toggleTagEditor()
             return
           }
           if (
@@ -1732,13 +1736,9 @@ window.__ModuleLoader__.load({
           commitRename,
           cancelRename,
           startRename,
-          tagMode,
-          tagOptions,
-          enterTagMode,
-          exitTagMode,
-          moveTagCursor,
-          pickTag,
-          applyTagOption,
+          tagEditor,
+          tagInputRef,
+          toggleTagEditor,
         ],
       )
 
@@ -1779,9 +1779,10 @@ window.__ModuleLoader__.load({
         state.pendingId !== null && state.pendingId === activeId && outline === null
       const exhausted = !pendingOutline && state.triedId === activeId
 
-      // One field, three jobs. Rename and tag are exclusive: both are entered from
-      // the list and exited with Escape, so only one can own the field.
-      const mode = rename !== null ? 'rename' : tagMode !== null ? 'tag' : 'search'
+      // Rename still owns the search field (a title is one line, and the mode bar
+      // names the row). Tags do not: a tag editor is a picker attached to the item,
+      // so it lives in the preview pane and the field stays a search field.
+      const mode = rename !== null ? 'rename' : 'search'
 
       /** The label list for a row's glyph strip, used as its accessible name. */
       const tagLabelsOf = (ids) =>
@@ -1844,22 +1845,14 @@ window.__ModuleLoader__.load({
                 role: 'option',
                 'aria-selected': selected ? 'true' : 'false',
                 'data-dsp-active': selected ? 'true' : undefined,
-                // A mode owns the field and its target: the list must not move under
-                // it, or the answer to "which session am I editing" changes silently.
-                'data-dsp-target': mode !== 'search' && selected ? 'true' : undefined,
-                'data-dsp-frozen': mode === 'search' ? undefined : 'true',
+                // The list stays live: the tag editor belongs to the highlighted
+                // row, so moving the highlight is how you change the target.
                 // Without this the click moves focus to <body>, after which no
                 // keydown passes through the card and every shortcut dies — on a
                 // path (an archived row) that deliberately keeps the palette open.
                 onMouseDown: (event) => event.preventDefault(),
-                onMouseEnter: () => {
-                  if (mode !== 'search') return
-                  setManualActiveId(row.id)
-                },
-                onClick: () => {
-                  if (mode !== 'search') return
-                  activate(row, archivedIds.has(row.id))
-                },
+                onMouseEnter: () => setManualActiveId(row.id),
+                onClick: () => activate(row, archivedIds.has(row.id)),
               },
               h(
                 'div',
@@ -1943,12 +1936,148 @@ window.__ModuleLoader__.load({
         if (activeRow.archived) badges.push(h(Badge, { key: 'archived' }, t('status.archived')))
         if (badges.length > 0) parts.push(h('div', { key: 'badges', className: 'dsp-badges' }, badges))
 
+        // The tag line belongs to the preview, always: the session's tags are part
+        // of reading it, and the editor opens directly under them.
         const sessionTags = activeRow.tagIds
           .map((tagId) => tagIndex.get(tagId))
           .filter((tag) => tag !== undefined)
-        if (sessionTags.length > 0) {
+        const editorOpen = tagEditor !== null && tagEditor.id === activeRow.id
+        parts.push(
+          h(
+            'div',
+            { key: 'tags', className: 'dsp-tagline' },
+            sessionTags.length === 0
+              ? h('span', { className: 'dsp-tagmeta' }, t('tags.none'))
+              : sessionTags.map((tag) => tagChip(tag)),
+            h(
+              'button',
+              {
+                type: 'button',
+                tabIndex: -1,
+                className: 'dsp-addtag',
+                'aria-expanded': editorOpen ? 'true' : 'false',
+                title: t('tags.add'),
+                onClick: toggleTagEditor,
+              },
+              `＋ ${t('tags.add')}`,
+            ),
+            h(
+              'span',
+              { className: 'dsp-tagmeta' },
+              t('tags.counter', { n: activeRow.tagIds.length }),
+            ),
+          ),
+        )
+
+        if (editorOpen) {
           parts.push(
-            h('div', { key: 'tags', className: 'dsp-chips' }, sessionTags.map((tag) => tagChip(tag))),
+            h(
+              'div',
+              { key: 'editor', className: 'dsp-tageditor' },
+              h('input', {
+                ref: tagInputRef,
+                className: 'dsp-taginput',
+                type: 'text',
+                role: 'combobox',
+                'aria-expanded': 'true',
+                'aria-controls': 'dsp-taglistbox',
+                'aria-activedescendant':
+                  tagOptions.length === 0 ? undefined : `dsp-tagopt-${tagCursor}`,
+                'aria-autocomplete': 'list',
+                'aria-label': t('tags.aria'),
+                placeholder: tags.ready ? t('tags.filterPlaceholder') : t('tags.notReady'),
+                value: tagDraft,
+                spellCheck: false,
+                autoComplete: 'off',
+                onChange: (event) => {
+                  const value = event.target.value
+                  setTagEditor((current) =>
+                    current === null ? current : { ...current, draft: value, cursor: 0 },
+                  )
+                },
+                onKeyDown: (event) => {
+                  // The card ignores events from this input by target, so the keys
+                  // that would otherwise cycle views or move the list are handled
+                  // here: Tab and Escape both leave the editor.
+                  if (event.key === 'Escape' || event.key === 'Tab') {
+                    event.preventDefault()
+                    closeTagEditor()
+                    return
+                  }
+                  if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+                    event.preventDefault()
+                    moveTagCursor(event.key === 'ArrowDown' ? 1 : -1)
+                    return
+                  }
+                  if (event.key === 'Enter') {
+                    event.preventDefault()
+                    if (!composingRef.current && event.nativeEvent?.isComposing !== true) pickTag()
+                  }
+                },
+                onCompositionStart: () => {
+                  composingRef.current = true
+                },
+                onCompositionEnd: () => {
+                  composingRef.current = false
+                },
+              }),
+              !tags.ready
+                ? h('div', { className: 'dsp-note', role: 'status' }, t('tags.notReadyHint'))
+                : null,
+              h(
+                'div',
+                {
+                  className: 'dsp-taglist',
+                  id: 'dsp-taglistbox',
+                  role: 'listbox',
+                  'aria-label': t('tags.aria'),
+                },
+                tagOptions.map((option, index) => {
+                  const tag = option.kind === 'tag' ? option.tag : null
+                  const assigned = tag !== null && activeRow.tagIds.includes(tag.id)
+                  return h(
+                    'div',
+                    {
+                      key: tag === null ? 'create' : tag.id,
+                      id: `dsp-tagopt-${index}`,
+                      className: 'dsp-tagrow',
+                      role: 'option',
+                      'aria-selected': assigned ? 'true' : 'false',
+                      'data-dsp-tagactive': index === tagCursor ? 'true' : undefined,
+                      onMouseDown: (event) => {
+                        event.preventDefault()
+                        setTagEditor((current) =>
+                          current === null ? current : { ...current, cursor: index },
+                        )
+                      },
+                      onClick: () => applyTagOption(option),
+                    },
+                    h('span', { className: 'dsp-tagcheck' }, tag === null ? '＋' : assigned ? '✓' : ''),
+                    tag === null || tag.emoji === ''
+                      ? tag === null
+                        ? null
+                        : h('span', {
+                            className: 'dsp-tagdot',
+                            style: {
+                              background: TAG_COLOR_TOKEN[tag.color] ?? TAG_COLOR_TOKEN.gray,
+                            },
+                          })
+                      : h('span', { className: 'dsp-chipglyph' }, tag.emoji),
+                    h(
+                      'span',
+                      { className: 'dsp-taglabel' },
+                      tag === null ? t('tags.create', { label: option.label }) : tag.label,
+                    ),
+                    h(
+                      'span',
+                      { className: 'dsp-tagmeta' },
+                      tag === null ? '' : t('tags.count', { n: model.tagCounts.get(tag.id) ?? 0 }),
+                    ),
+                  )
+                }),
+              ),
+              h('div', { className: 'dsp-tagmeta' }, t('tags.editorHint')),
+            ),
           )
         }
 
@@ -2018,99 +2147,6 @@ window.__ModuleLoader__.load({
                 hint: blankQuery ? undefined : t('palette.emptyHint'),
               }
 
-      // The picker takes the preview pane rather than the list: the row being
-      // tagged has to stay visible while you choose, and the list's own keyboard
-      // handling keeps working for retargeting.
-      let picker = null
-      if (tagMode !== null && activeRow !== null) {
-        const options = tagOptions.map((option, index) => {
-          const tag = option.kind === 'tag' ? option.tag : null
-          const assigned = tag !== null && activeRow.tagIds.includes(tag.id)
-          return h(
-            'div',
-            {
-              key: tag === null ? 'create' : tag.id,
-              id: `dsp-tagopt-${index}`,
-              className: 'dsp-tagrow',
-              role: 'option',
-              'aria-selected': assigned ? 'true' : 'false',
-              'data-dsp-tagactive': index === tagCursor ? 'true' : undefined,
-              // Keeps focus in the field, so ↑↓ and typing still work after a click.
-              onMouseDown: (event) => {
-                event.preventDefault()
-                setTagMode((current) =>
-                  current === null ? current : { ...current, cursor: index },
-                )
-              },
-              onClick: () => applyTagOption(option),
-            },
-            h('span', { className: 'dsp-tagcheck' }, tag === null ? '＋' : assigned ? '✓' : ''),
-            tag === null || tag.emoji === ''
-              ? tag === null
-                ? null
-                : h('span', {
-                    className: 'dsp-tagdot',
-                    style: {
-                      background: TAG_COLOR_TOKEN[tag.color] ?? TAG_COLOR_TOKEN.gray,
-                    },
-                  })
-              : h('span', { className: 'dsp-chipglyph' }, tag.emoji),
-            h(
-              'span',
-              { className: 'dsp-taglabel' },
-              tag === null ? t('tags.create', { label: option.label }) : tag.label,
-            ),
-            h(
-              'span',
-              { className: 'dsp-tagmeta' },
-              tag === null ? '' : t('tags.count', { n: model.tagCounts.get(tag.id) ?? 0 }),
-            ),
-          )
-        })
-        picker = h(
-          React.Fragment,
-          null,
-          h('div', { key: 'title', className: 'dsp-panetitle' }, activeRow.title),
-          h(
-            'div',
-            { key: 'meta', className: 'dsp-panemeta' },
-            tags.ready ? t('tags.hint') : t('tags.notReadyHint'),
-          ),
-          // What this session already carries, so tagging never hides the state it
-          // is editing. Display chips, not the filter control: the list below is the
-          // only toggle surface in this mode.
-          h(
-            'div',
-            { key: 'chips', className: 'dsp-chips' },
-            activeRow.tagIds
-              .map((tagId) => tagIndex.get(tagId))
-              .filter((tag) => tag !== undefined)
-              .map((tag) => tagChip(tag, { display: true })),
-            h(
-              'span',
-              { className: 'dsp-tagmeta' },
-              t('tags.count', { n: activeRow.tagIds.length }),
-            ),
-          ),
-          !tags.ready
-            ? h('div', { key: 'notready', className: 'dsp-note', role: 'status' }, t('tags.notReady'))
-            : null,
-          h(
-            'div',
-            {
-              key: 'list',
-              className: 'dsp-taglist',
-              id: 'dsp-taglistbox',
-              role: 'listbox',
-              'aria-label': t('tags.aria'),
-            },
-            options.length > 0
-              ? options
-              : h('div', { className: 'dsp-note' }, tags.ready ? t('tags.empty') : ''),
-          ),
-        )
-      }
-
       const footerLeft = [
         t('palette.count', { n: model.count }),
         model.subagentHidden > 0
@@ -2157,8 +2193,7 @@ window.__ModuleLoader__.load({
               // session list while searching, and a combobox over the tag list
               // while picking.
               role: mode === 'rename' ? 'textbox' : 'combobox',
-              'aria-label':
-                mode === 'rename' ? t('rename.aria') : mode === 'tag' ? t('tags.aria') : undefined,
+              'aria-label': mode === 'rename' ? t('rename.aria') : undefined,
               ...(mode === 'search'
                 ? {
                     'aria-expanded': 'true',
@@ -2167,35 +2202,19 @@ window.__ModuleLoader__.load({
                       activeId === null ? undefined : `dsp-opt-${domSafe(activeId)}`,
                     'aria-autocomplete': 'list',
                   }
-                : mode === 'tag'
-                  ? {
-                      'aria-expanded': 'true',
-                      'aria-controls': 'dsp-taglistbox',
-                      'aria-activedescendant':
-                        tagOptions.length === 0 ? undefined : `dsp-tagopt-${tagCursor}`,
-                      'aria-autocomplete': 'list',
-                    }
-                  : rename.busy
-                    ? { 'aria-busy': 'true' }
-                    : {}),
+                : rename.busy
+                  ? { 'aria-busy': 'true' }
+                  : {}),
               // Not `disabled`: a disabled field loses focus, and the editor has to
               // stay focused through an in-flight write.
               readOnly: rename !== null && rename.busy,
-              placeholder:
-                mode === 'search'
-                  ? t('palette.placeholder')
-                  : mode === 'rename'
-                    ? t('rename.placeholder')
-                    : t('tags.emptyHint'),
-              value: mode === 'search' ? query : mode === 'rename' ? rename.draft : tagDraft,
+              placeholder: mode === 'search' ? t('palette.placeholder') : t('rename.placeholder'),
+              value: mode === 'search' ? query : rename.draft,
               spellCheck: false,
               autoComplete: 'off',
               onChange: (event) => {
                 const value = event.target.value
                 if (mode === 'search') setQuery(value)
-                else if (mode === 'tag') {
-                  setTagMode((current) => (current === null ? current : { ...current, draft: value, cursor: 0 }))
-                }
                 // Typing clears the last failure: the message describes the draft
                 // that was submitted, not the one being typed.
                 else
@@ -2213,11 +2232,7 @@ window.__ModuleLoader__.load({
             h(
               'span',
               { className: mode === 'search' ? 'dsp-keyhint' : 'dsp-keyhint dsp-keyhint-renaming' },
-              mode === 'search'
-                ? (state.hotkeyLabel ?? '')
-                : mode === 'rename'
-                  ? t('rename.hint')
-                  : t('tags.hint'),
+              mode === 'search' ? (state.hotkeyLabel ?? '') : t('rename.hint'),
             ),
           ),
           // A mode owns the field, so it says which session it is acting on and
@@ -2232,12 +2247,7 @@ window.__ModuleLoader__.load({
                 h(
                   'span',
                   null,
-                  mode === 'rename'
-                    ? t('rename.bar', { title: activeRow === null ? '' : activeRow.title })
-                    : t('tags.bar', {
-                        title: activeRow === null ? '' : activeRow.title,
-                        n: activeRow === null ? 0 : activeRow.tagIds.length,
-                      }),
+                  t('rename.bar', { title: activeRow === null ? '' : activeRow.title }),
                 ),
                 h('span', { className: 'dsp-modebar-hint' }, t('mode.locked')),
               ),
@@ -2337,7 +2347,7 @@ window.__ModuleLoader__.load({
                   )
                 : rowNodes,
             ),
-            h('div', { className: 'dsp-pane' }, picker === null ? preview : picker),
+            h('div', { className: 'dsp-pane' }, preview),
           ),
           h(
             'div',

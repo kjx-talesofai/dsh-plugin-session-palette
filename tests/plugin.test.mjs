@@ -2088,13 +2088,17 @@ test('a renamed workspace does not hide the folder it lives in', () => {
 
 //#endregion
 
+
 //#region tags
 //
-// The tag store lives in the plugin's Config (volatile fields), and the palette is
-// the only picker: the sidebar's menu row opens it over the row the menu belonged
-// to, so there is one implementation of "which tags does this session have".
+// A tag editor belongs to the item it edits. The first version made it a mode of
+// the search field, and that was wrong in a way the user felt immediately: the
+// field that searches sessions started filtering tags, and the list had to be
+// frozen to keep the target still. These tests pin the corrected model — the
+// editor lives in the preview pane, the search field keeps searching, and the
+// list stays live.
 
-/** Config with one tag and one tagged session. */
+/** Config with four tags and one tagged session. */
 function tagsConfig(extra = {}) {
   return {
     takeOver: true,
@@ -2116,57 +2120,70 @@ function tagUi(options = {}) {
       { id: 'a', title: 'Tagged one' },
       { id: 'b', title: 'Plain one' },
     ]),
-    ctx: { configValue: tagsConfig(options.config) },
+    ctx: { configValue: { ...tagsConfig(), ...(options.config ?? {}) } },
     ...options.ui,
   })
   made.ui.find('dsp-card').props.onKeyDown(press('t', { shiftKey: true, metaKey: true }))
   return made
 }
 
-test('the tag store is read from Config and marks the rows it belongs to', () => {
-  const { ui } = paletteUi({
-    sessions: sessionsOf([{ id: 'a', title: 'Tagged' }, { id: 'b', title: 'Plain' }]),
-    ctx: { configValue: tagsConfig() },
-  })
-  const glyphs = ui.all('dsp-rowtags')
-  assert.equal(glyphs.length, 1, 'only the tagged row carries a glyph strip')
-  // The label is the accessible name; the visible strip is the emoji alone.
-  assert.equal(glyphs[0].props['aria-label'], '重要')
-})
-
-test('⌘⇧T opens the picker over the preview pane, not the list', () => {
+test('⌘⇧T opens a tag editor in the preview, and leaves the search field alone', () => {
   const { ui } = tagUi()
-  assert.ok(ui.find('dsp-taglist') !== null, 'the picker is up')
-  assert.equal(ui.all('dsp-row').length, 2, 'the session list is still there to retarget')
 
   const field = ui.find('dsp-input')
-  assert.equal(field.props.role, 'combobox')
-  assert.equal(field.props['aria-controls'], 'dsp-taglistbox')
-  assert.equal(field.props['aria-activedescendant'], 'dsp-tagopt-0')
-  assert.equal(field.props.placeholder, 'tags.emptyHint')
-  assert.deepEqual(ui.find('dsp-keyhint').children, ['tags.hint'])
+  assert.equal(field.props.role, 'combobox', 'the field is still the session search')
+  assert.equal(field.props['aria-controls'], 'dsp-listbox')
+  assert.equal(field.props.value, '', 'and it is not carrying a tag draft')
 
+  const input = ui.find('dsp-taginput')
+  assert.ok(input !== null, 'the editor opened in the pane')
+  assert.equal(input.props.value, '')
+  assert.equal(input.props.placeholder, 'tags.filterPlaceholder')
+  assert.equal(input.props['aria-controls'], 'dsp-taglistbox')
+  assert.equal(input.props['aria-activedescendant'], 'dsp-tagopt-0')
+
+  assert.equal(ui.find('dsp-addtag').props['aria-expanded'], 'true')
   // Every vocabulary entry is offered, with the tagged one already ticked.
-  const rows = ui.all('dsp-tagrow')
   assert.deepEqual(
-    rows.map((row) => row.props['aria-selected']),
+    ui.all('dsp-tagrow').map((row) => row.props['aria-selected']),
     ['true', 'false', 'false', 'false'],
   )
+})
+
+test('one field, one job: the editor filters tags, the field filters sessions', () => {
+  const { ui } = tagUi()
+
+  // In the editor, typing narrows the TAG list and leaves the query (and the
+  // session list) alone. This is what the previous version got wrong: the same
+  // keystrokes used to mean two different things depending on a hidden mode.
+  ui.find('dsp-taginput').props.onChange({ target: { value: '实验' } })
+  assert.equal(ui.find('dsp-input').props.value, '', 'the session query is untouched')
+  assert.deepEqual(rowTitles(ui), ['Tagged one', 'Plain one'], 'and the list is untouched')
+  assert.deepEqual(
+    ui.all('dsp-tagrow').map((row) => row.props.id),
+    ['dsp-tagopt-0'],
+    'while the tag list narrowed — an exact label offers no create row',
+  )
+
+  // In the search field, typing narrows SESSIONS — and that moves the highlight,
+  // which closes an editor that belonged to the old row.
+  ui.find('dsp-input').props.onChange({ target: { value: 'Plain' } })
+  assert.deepEqual(rowTitles(ui), ['Plain one'], 'the list filters by session again')
+  assert.equal(ui.find('dsp-tageditor'), null, 'the editor belonged to the old row')
 })
 
 test('Enter toggles a tag through the assignments field', async () => {
   const { ui, record } = tagUi()
   // Second option is "实验", untouched by session a.
-  ui.find('dsp-card').props.onKeyDown(press('ArrowDown'))
-  ui.find('dsp-card').props.onKeyDown(press('Enter'))
+  ui.find('dsp-taginput').props.onKeyDown(press('ArrowDown'))
+  ui.find('dsp-taginput').props.onKeyDown(press('Enter'))
   await Promise.resolve()
 
   assert.deepEqual(plain(record.configWrites[0]), {
     field: 'assignments',
     value: [{ sessionId: 'a', tags: ['fire', 'lab'] }],
   })
-  // The row updates from the confirmation, not from a reload.
-  assert.equal(ui.all('dsp-rowtags')[0].props['aria-label'], '重要 · 实验')
+  assert.equal(ui.find('dsp-tagline').children.flat(Infinity).filter((c) => c?.props?.className === 'dsp-chip').length, 2)
 })
 
 test('a fourth tag is refused with a reason instead of failing silently', async () => {
@@ -2174,10 +2191,11 @@ test('a fourth tag is refused with a reason instead of failing silently', async 
     config: { assignments: [{ sessionId: 'a', tags: ['fire', 'lab', 'later'] }] },
   })
   const before = record.configWrites.length
-  ui.find('dsp-card').props.onKeyDown(press('ArrowDown')) // "实验"… already tagged
-  ui.find('dsp-card').props.onKeyDown(press('ArrowDown'))
-  ui.find('dsp-card').props.onKeyDown(press('ArrowDown')) // "第四个"
-  ui.find('dsp-card').props.onKeyDown(press('Enter'))
+  const input = () => ui.find('dsp-taginput')
+  input().props.onKeyDown(press('ArrowDown'))
+  input().props.onKeyDown(press('ArrowDown'))
+  input().props.onKeyDown(press('ArrowDown')) // "第四个"
+  input().props.onKeyDown(press('Enter'))
   await Promise.resolve()
 
   assert.equal(record.configWrites.length, before, 'the ceiling is not a write that gets rolled back')
@@ -2186,9 +2204,9 @@ test('a fourth tag is refused with a reason instead of failing silently', async 
 
 test('typing a name the vocabulary does not have creates it and applies it', async () => {
   const { ui, record } = tagUi()
-  ui.find('dsp-input').props.onChange({ target: { value: '新想法' } })
+  ui.find('dsp-taginput').props.onChange({ target: { value: '新想法' } })
   assert.equal(ui.find('dsp-tagrow').props.id, 'dsp-tagopt-0', 'the create row leads')
-  ui.find('dsp-card').props.onKeyDown(press('Enter'))
+  ui.find('dsp-taginput').props.onKeyDown(press('Enter'))
   await Promise.resolve()
 
   const tagsWrite = record.configWrites.find((write) => write.field === 'tags')
@@ -2200,6 +2218,54 @@ test('typing a name the vocabulary does not have creates it and applies it', asy
   const assigned = record.configWrites.find((write) => write.field === 'assignments')
   assert.ok(assigned !== undefined, 'and applied to the highlighted session')
   assert.equal(assigned.value[0].tags.includes(created.id), true)
+})
+
+test('the list stays live, and moving the highlight closes the editor', () => {
+  const { ui } = tagUi()
+  assert.ok(ui.find('dsp-tageditor') !== null)
+
+  // No freeze: the pointer moves the highlight, exactly like everywhere else.
+  ui.all('dsp-row')[1].props.onMouseEnter()
+  assert.deepEqual(rowTitles(ui), ['Tagged one', 'Plain one'], 'the list is not locked')
+  // An editor belongs to the row it opened on, so it closes rather than silently
+  // retargeting — which is the failure the frozen version was blamed for.
+  assert.equal(ui.find('dsp-tageditor'), null)
+  assert.deepEqual(
+    ui
+      .all('dsp-row')
+      .filter((row) => row.props['aria-selected'] === 'true')
+      .map((row) => String(row.props.id).replace(/^dsp-opt-/, '')),
+    ['b'],
+    'and the highlight is where the pointer put it',
+  )
+})
+
+test('Escape closes the editor and keeps the query', () => {
+  const { ui } = tagUi()
+  // Build the query first, then open the editor on the row it selected — the way
+  // the flow actually goes.
+  ui.find('dsp-input').props.onChange({ target: { value: 'Plain' } })
+  ui.find('dsp-card').props.onKeyDown(press('t', { shiftKey: true, metaKey: true }))
+  assert.ok(ui.find('dsp-tageditor') !== null)
+
+  ui.find('dsp-taginput').props.onKeyDown(press('Escape'))
+  assert.equal(ui.find('dsp-tageditor'), null)
+  assert.equal(ui.find('dsp-input').props.value, 'Plain', 'the search is where it was')
+})
+
+test('the preview always shows the session tags, and its + opens the editor', () => {
+  const { ui } = paletteUi({
+    sessions: sessionsOf([{ id: 'a', title: 'Tagged' }]),
+    ctx: { configValue: tagsConfig() },
+  })
+  const line = () => ui.find('dsp-tagline')
+  assert.ok(line() !== null, 'no editor needed to see the tags')
+  const chips = line().children.flat(Infinity).filter((c) => c?.props?.className === 'dsp-chip')
+  assert.equal(chips.length, 1, 'the session tag is visible while reading')
+  assert.equal(chips[0].props['aria-pressed'], 'false', 'and it is the filter control')
+
+  ui.find('dsp-addtag').props.onClick()
+  assert.ok(ui.find('dsp-tageditor') !== null, 'the button opens the editor too')
 })
 
 test('a tag chip filters the list, and clicking it again clears the filter', () => {
@@ -2222,16 +2288,18 @@ test('the filter bar lists only tags in use, and offers a way out', () => {
     sessions: sessionsOf([{ id: 'a', title: 'Tagged' }, { id: 'b', title: 'Plain' }]),
     ctx: { configValue: tagsConfig() },
   })
-  // Only the bar: the preview pane renders the same chip component for the
-  // highlighted session's own tags.
+  // Only the bar: the preview renders the same chip component for the highlighted
+  // session's own tags.
   const bar = () => (ui.find('dsp-filters')?.children ?? []).flat(Infinity).filter(Boolean)
   const chipText = () =>
-    bar().map((chip) => {
-      const label = chip.children?.find?.((child) => child?.props?.className === 'dsp-chiplabel')
-      if (label === undefined) return null
-      const count = chip.children.find((child) => child?.props?.className === 'dsp-chipcount')
-      return `${label.children[0]}|${count?.children?.[0] ?? ''}`
-    }).filter((value) => value !== null)
+    bar()
+      .map((chip) => {
+        const label = chip.children?.find?.((child) => child?.props?.className === 'dsp-chiplabel')
+        if (label === undefined) return null
+        const count = chip.children.find((child) => child?.props?.className === 'dsp-chipcount')
+        return `${label.children[0]}|${count?.children?.[0] ?? ''}`
+      })
+      .filter((value) => value !== null)
 
   // The vocabulary has four tags; only "重要" is on a session, so only it is a
   // filter — an unused tag would be a control that can only empty the list.
@@ -2247,8 +2315,7 @@ test('the filter bar lists only tags in use, and offers a way out', () => {
 })
 
 test('a Host that cannot store tags says so instead of pretending', async () => {
-  // The pre-tag schema: the fields are absent, not empty. That is what a running
-  // Host that predates this release reports.
+  // The pre-tag schema: the fields are absent, not empty.
   const made = paletteUi({
     sessions: sessionsOf([{ id: 'a', title: 'A' }]),
     ctx: { configValue: { takeOver: true } },
@@ -2257,19 +2324,18 @@ test('a Host that cannot store tags says so instead of pretending', async () => 
   const notes = made.ui
     .nodes()
     .flatMap((node) => node.children.filter((child) => typeof child === 'string'))
-  assert.ok(notes.includes('tags.notReady'), 'the picker explains the restart')
-  assert.ok(notes.includes('tags.notReadyHint'))
+  assert.ok(notes.includes('tags.notReadyHint'), 'the editor explains the restart')
 
-  made.ui.find('dsp-card').props.onKeyDown(press('Enter'))
+  made.ui.find('dsp-taginput').props.onKeyDown(press('Enter'))
   await Promise.resolve()
   assert.deepEqual(made.record.configWrites, [], 'nothing is written into a schema that would drop it')
   assert.equal(made.ui.palette.store.getSnapshot().notice.text, 'tags.notReady')
 })
 
 test('a half-migrated schema cannot be written to either', async () => {
-  // A vocabulary without an assignment field: the picker has something to offer,
-  // so the guard that matters is the one on the write path, not on the pane.
-  const { ui, record } = paletteUi({
+  // A vocabulary without an assignment field: the editor has something to offer,
+  // so the guard that matters is the one on the write path.
+  const made = paletteUi({
     sessions: sessionsOf([{ id: 'a', title: 'A' }]),
     ctx: {
       configValue: {
@@ -2278,12 +2344,12 @@ test('a half-migrated schema cannot be written to either', async () => {
       },
     },
   })
-  ui.find('dsp-card').props.onKeyDown(press('t', { shiftKey: true, metaKey: true }))
-  assert.equal(ui.all('dsp-tagrow').length, 1, 'the vocabulary is offered')
-  ui.find('dsp-card').props.onKeyDown(press('Enter'))
+  made.ui.find('dsp-card').props.onKeyDown(press('t', { shiftKey: true, metaKey: true }))
+  assert.equal(made.ui.all('dsp-tagrow').length, 1, 'the vocabulary is offered')
+  made.ui.find('dsp-taginput').props.onKeyDown(press('Enter'))
   await Promise.resolve()
-  assert.deepEqual(record.configWrites, [])
-  assert.equal(ui.palette.store.getSnapshot().notice.text, 'tags.notReady')
+  assert.deepEqual(made.record.configWrites, [])
+  assert.equal(made.ui.palette.store.getSnapshot().notice.text, 'tags.notReady')
 })
 
 test('the sidebar menu row opens the palette in tag mode for its own row', () => {
@@ -2306,7 +2372,6 @@ test('the sidebar menu row opens the palette in tag mode for its own row', () =>
   assert.deepEqual(row.children[1].children, ['tags.manage'])
   row.props.onClick()
 
-  // The row defers to the palette: one picker, aimed at the row the menu belonged to.
   assert.deepEqual(dismissed, [false], 'the menu closes first')
   const state = ui.palette.store.getSnapshot()
   assert.equal(state.open, true)
@@ -2321,90 +2386,12 @@ test('a tag request is consumed once, so ⌘K later opens a plain palette', () =
   ui.palette.store.update((state) => ({ ...state, tagRequest: { id: 'b', seq: 1 } }))
   ui.render()
   assert.equal(ui.palette.store.getSnapshot().tagRequest, null, 'consumed')
-  assert.ok(ui.find('dsp-taglist') !== null, 'and the picker opened')
+  assert.ok(ui.find('dsp-tageditor') !== null, 'and the editor opened')
   const selected = ui
     .all('dsp-row')
     .filter((row) => row.props['aria-selected'] === 'true')
-    .map((row) => row.props.id)
-  assert.deepEqual(selected, ['dsp-opt-b'], 'aimed at the requested session')
-})
-
-//#endregion
-
-//#region what the mode owns
-//
-// The complaint that produced these: "I can't see which session I'm on, and the
-// arrows still move the list." A mode now (a) names its target on its own line,
-// (b) says the list is locked, and (c) actually locks it.
-
-test('the mode bar names the session it is acting on', () => {
-  const { ui } = tagUi()
-  const bar = () => ui.find('dsp-modebar')
-  const text = () =>
-    bar()
-      .children.flat(Infinity)
-      .filter((child) => typeof child === 'string' || typeof child?.children?.[0] === 'string')
-      .map((child) => (typeof child === 'string' ? child : child.children[0]))
-      .join(' ')
-
-  assert.match(text(), /tags\.bar/, 'which mode')
-  assert.match(text(), /Tagged one/, 'and which session')
-  assert.match(text(), /"n":1/, 'and how full it is')
-  assert.match(text(), /mode\.locked/, 'and that the list will not move')
-
-  // Escape leaves the mode, and the bar goes with it.
-  ui.find('dsp-card').props.onKeyDown(press('Escape'))
-  assert.equal(bar(), null)
-})
-
-test('the rename mode bar names the session too', () => {
-  const { ui } = paletteUi({ sessions: sessionsOf([{ id: 'a', title: 'Old name' }]) })
-  ui.find('dsp-card').props.onKeyDown(press('r', { shiftKey: true, metaKey: true }))
-  const text = ui
-    .find('dsp-modebar')
-    .children.flat(Infinity)
-    .map((child) => (typeof child === 'string' ? child : child?.children?.[0]))
-    .filter((child) => typeof child === 'string')
-    .join(' ')
-  assert.match(text, /rename\.bar/)
-  assert.match(text, /Old name/)
-})
-
-test('while tagging, hovering or clicking the list cannot move the target', () => {
-  const { ui, record } = tagUi()
-  const target = () =>
-    ui
-      .all('dsp-row')
-      .filter((row) => row.props['data-dsp-target'] === 'true')
-      .map((row) => String(row.props.id).replace(/^dsp-opt-/, ''))
-
-  assert.deepEqual(target(), ['a'], 'the row the picker opened on')
-
-  // Hovering "Plain one" used to retarget the picker silently. Now the list is
-  // frozen for as long as the mode owns the field.
-  const other = ui.all('dsp-row')[1]
-  other.props.onMouseEnter()
-  other.props.onClick()
-  assert.deepEqual(target(), ['a'])
-  assert.deepEqual(record.openSession, [], 'and a click does not open a session either')
-  assert.equal(ui.find('dsp-row').props['data-dsp-frozen'], 'true')
-
-  // Every row carries the frozen marker, so the affordance matches the behaviour.
-  assert.ok(ui.all('dsp-row').every((row) => row.props['data-dsp-frozen'] === 'true'))
-})
-
-test('the picker shows the tags the session already has, without hiding them', () => {
-  const { ui } = tagUi({ config: { assignments: [{ sessionId: 'a', tags: ['fire', 'lab'] }] } })
-  const picker = ui.find('dsp-taglist')
-  assert.ok(picker !== null)
-
-  // The chips above the list are display-only: pressing a tag must mean "filter"
-  // everywhere else, so it cannot mean "toggle" here.
-  const chipNodes = ui.all('dsp-chip').filter((chip) => chip.type === 'span')
-  assert.equal(chipNodes.length, 2, 'both tags are visible while tagging')
-  // The bar's chips are still buttons — those filter. These two are not.
-  assert.ok(chipNodes.every((chip) => chip.props['aria-pressed'] === undefined))
-  assert.equal(ui.find('dsp-tagmeta').children[0], 'tags.count({"n":2})')
+    .map((row) => String(row.props.id).replace(/^dsp-opt-/, ''))
+  assert.deepEqual(selected, ['b'], 'aimed at the requested session')
 })
 
 test('tags sit after the title, not at the trailing edge', () => {
@@ -2416,6 +2403,31 @@ test('tags sit after the title, not at the trailing edge', () => {
   assert.equal(title.children[0].props.className, 'dsp-rowtitletext', 'the text comes first')
   assert.equal(title.children[1].props.className, 'dsp-rowtags', 'then the tags')
   assert.equal(title.children[1].props['aria-label'], '重要')
+})
+
+//#endregion
+
+//#region what a mode owns
+//
+// Rename still owns the search field — a title is one line — so it keeps the mode
+// bar that says which session it is acting on.
+
+test('the rename mode bar names the session, and does not outlive the mode', () => {
+  const { ui } = paletteUi({ sessions: sessionsOf([{ id: 'a', title: 'Old name' }]) })
+  assert.equal(ui.find('dsp-modebar'), null, 'nothing to say while searching')
+
+  ui.find('dsp-card').props.onKeyDown(press('r', { shiftKey: true, metaKey: true }))
+  const text = ui
+    .find('dsp-modebar')
+    .children.flat(Infinity)
+    .map((child) => (typeof child === 'string' ? child : child?.children?.[0]))
+    .filter((child) => typeof child === 'string')
+    .join(' ')
+  assert.match(text, /rename\.bar/)
+  assert.match(text, /Old name/)
+
+  ui.find('dsp-card').props.onKeyDown(press('Escape'))
+  assert.equal(ui.find('dsp-modebar'), null)
 })
 
 //#endregion
