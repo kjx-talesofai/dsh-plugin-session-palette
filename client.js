@@ -880,16 +880,24 @@ window.__ModuleLoader__.load({
             if (pinnedIds.has(id)) pinnedTotal += 1
           }
 
+          const folder = folderLabel(row.cwd)
           const title =
             typeof row.displayTitle === 'string' && row.displayTitle !== ''
               ? row.displayTitle
-              : folderLabel(row.cwd) !== ''
-                ? folderLabel(row.cwd)
+              : folder !== ''
+                ? folder
                 : String(id)
-          const workspace = titles.get(id) ?? folderLabel(row.cwd)
+          const workspace = titles.get(id) ?? folder
           let rank
           if (needle !== '') {
-            rank = rankCandidate([title, workspace], needle)
+            // The directory, not just the workspace's display name: a workspace
+            // can be renamed, and then its folder — the thing actually on disk —
+            // becomes unsearchable. The full path is included for the same
+            // reason a path-shaped query is the one people type ("test-dsh").
+            // Titles still win: the ranker scores a match near the start of a
+            // short string far above one buried in a long path.
+            const path = typeof row.cwd === 'string' ? row.cwd : ''
+            rank = rankCandidate([title, workspace, folder, path], needle)
             if (rank === undefined) continue
           }
 

@@ -65,7 +65,7 @@ Press <kbd>⌘K</kbd> and get a **Spotlight-style session palette** instead of a
 - **标题有字节上限**（DSH 默认 80 字节，中文约 26 个字）。超了 host 会截断，面板的提示报的是**实际存下来的标题**，不是你打的草稿。
 - **双击标题**是在宿主自己的标题元素上挂的监听（匹配 `crumbCurrent` 这个类名后缀），所以它是这一版里**唯一依赖宿主 DOM 的地方**：DSH 哪天把这个类名改了，双击会静默失效（⌘K → ⌘⇧R 那条路不受影响）。侧边栏那排会话的**双击归宿主管**（它弹自己的改名框），这里刻意不碰。
 - **它一个字都不改你的按键偏好**。接管走的是「固定键位」这条官方通道，只在内存里生效；所以**想关掉就干净地关掉**，没有需要还原的东西。
-- **它不做全文搜索**（还没做）。现在只匹配**会话标题**和工作区名，不匹配消息正文。所以找一个"聊过某个话题"的会话，暂时还得用侧边栏那个搜索。
+- **它不做全文搜索**（还没做）。现在匹配**会话标题**、**工作区名**和**工作区目录路径**（工作区被改过名之后，目录名仍然搜得到），不匹配消息正文。所以找一个"聊过某个话题"的会话，暂时还得用侧边栏那个搜索。
 - **预览在旧会话上要等一下**：DSH 的 projection 缓存只覆盖约三分之二的会话，其余的是「很久没碰过的那些」。面板在高亮停留约 0.2 秒后才会去读它们（一次一行，不并发），所以快速划过时不会卡。
 - 预览里的**文案是「你 X 前发言」而不是「X 前」**——因为 DSH 的 `updatedAt` 记的是**你最后一次输入的时间**，模型回复**不会**推进它。写"2 小时前"会骗人。
 
@@ -114,7 +114,7 @@ This plugin is **not published to npm**, and `npm install` is not the install pa
 ## Usage
 
 1. Press <kbd>⌘K</kbd>. The palette opens with your sessions already listed.
-2. Type to narrow by **title or workspace name** (fuzzy-matched, ordered-subsequence — the same ranker the host's own `/` menu uses).
+2. Type to narrow by **title, workspace name, or the directory the workspace lives in** (fuzzy-matched, ordered-subsequence — the same ranker the host's own `/` menu uses). The directory matters because a renamed workspace no longer shows its folder, and the folder is what you remember.
 3. <kbd>↑</kbd>/<kbd>↓</kbd> or hover to move the highlight; the right-hand pane previews that session's last turn.
 4. <kbd>⏎</kbd> opens it. <kbd>Tab</kbd> switches to the Pinned or Archived drawer.
 5. <kbd>⌘⇧R</kbd> renames the highlighted session right there — the search field becomes the title field, <kbd>⏎</kbd> saves, <kbd>esc</kbd> cancels.
@@ -152,7 +152,7 @@ The preview comes from the host's `turnOutline` projection, which already carrie
 
 ## What it does not reach
 
-- **No content search yet.** Matching covers the session title and the workspace name. The message-body search the shipped sidebar performs is not wired in.
+- **No content search yet.** Matching covers the session title, the workspace name and the workspace path. The message-body search the shipped sidebar performs is not wired in.
 - **No query language yet.** `@workspace`, `is:archived`, `after:7d` and filter chips are designed but not implemented.
 - **No settings UI yet.** The one switch (`takeOver`) lives in your profile's `cordis.patch.yml`:
   ```yaml

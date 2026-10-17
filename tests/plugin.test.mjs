@@ -661,6 +661,29 @@ test('Config exposes the takeover switch as a volatile boolean, read as text', (
   assert.ok(!hostSource.includes('moveSidebarSearch'))
 })
 
+test('the tag store is three volatile fields, because only volatile is page-writable', () => {
+  // Tag data is edited from the page and lives in the profile's patch. `.volatile()`
+  // is what makes it writable there AND what keeps a write from remounting the
+  // plugin (the Loader compares volatile fields out of the update diff), so a
+  // field that lost it would either be rejected or close the palette on save.
+  for (const field of ['tags', 'assignments']) {
+    assert.match(hostSource, new RegExp(`${field}: z\\s*\\n?\\s*\\.array\\(`), `${field} is a list`)
+  }
+  // Count only code, not the doc sentence that mentions the decorator.
+  const declarations = hostSource
+    .split('\n')
+    .filter((line) => line.includes('.volatile()') && !line.trimStart().startsWith('*'))
+  assert.equal(
+    declarations.length,
+    3,
+    'takeOver, tags and assignments — a new field without volatile() is invisible to the page',
+  )
+  // Identity is the id, not the label: renaming a tag must not orphan assignments.
+  assert.match(hostSource, /id: z\.string\(\),\n\s*label: z\.string\(\),/)
+  // A flat list, not a map: a schema map would need a key domain for session ids.
+  assert.match(hostSource, /sessionId: z\.string\(\),\n\s*tags: z\.array\(z\.string\(\)\),/)
+})
+
 test('the package declares the client half the loader gate needs', () => {
   assert.equal(pkg.dsh.client.platform, 'web')
   assert.ok(pkg.exports['./client'], 'exports["./client"] is required for discovery')
@@ -1990,6 +2013,47 @@ test('IME composition owns Enter in the header editor too', () => {
   made.ui.find('dsp-title-edit').props.onCompositionEnd()
   made.ui.find('dsp-title-edit').props.onKeyDown(press('Enter'))
   assert.equal(made.record.renames.length, 1)
+})
+
+//#endregion
+
+//#region directory search
+
+test('a query finds a Session by a directory on its path, not just by its title', () => {
+  const { ui } = paletteUi({
+    sessions: sessionsOf([
+      { id: 'a', title: 'Build the thing', cwd: '/Users/me/workspace/test-dsh/palette' },
+      { id: 'b', title: 'Unrelated', cwd: '/Users/me/workspace/other' },
+    ]),
+  })
+  ui.find('dsp-input').props.onChange({ target: { value: 'test-dsh' } })
+  const titles = ui
+    .all('dsp-rowtitle')
+    .flatMap((node) => node.children.filter((child) => typeof child === 'string'))
+  // Before the path was included, "test-dsh" matched nothing: the only searchable
+  // strings were the title and the folder *basename* ("palette").
+  assert.deepEqual(titles, ['Build the thing'])
+})
+
+test('a renamed workspace does not hide the folder it lives in', () => {
+  const { ui } = paletteUi({
+    sessions: sessionsOf([
+      { id: 'a', title: 'Silo 产品立项', cwd: '/Users/me/workspace/project_silo' },
+      { id: 'b', title: 'Other', cwd: '/Users/me/workspace/other' },
+    ]),
+    workspaces: {
+      items: [
+        { workspaceId: 'w1', title: 'Silo 正式开发', path: '/Users/me/workspace/project_silo', sessionIds: ['a'] },
+      ],
+    },
+  })
+  // The workspace title wins as the subtitle, which is exactly why the folder has
+  // to stay searchable on its own.
+  ui.find('dsp-input').props.onChange({ target: { value: 'project_silo' } })
+  const titles = ui
+    .all('dsp-rowtitle')
+    .flatMap((node) => node.children.filter((child) => typeof child === 'string'))
+  assert.deepEqual(titles, ['Silo 产品立项'])
 })
 
 //#endregion

@@ -38,6 +38,41 @@ import z from '@deepseek-ai/schemastery'
  */
 export const Config = z.object({
   takeOver: z.boolean().default(true).volatile(),
+  /**
+   * Tag vocabulary: what a session may be marked with.
+   *
+   * An explicit `id` rather than the label, so renaming a tag later does not
+   * orphan the assignments that point at it — the label is display, the id is
+   * identity.
+   */
+  tags: z
+    .array(
+      z.object({
+        id: z.string(),
+        label: z.string(),
+        emoji: z.string().default(''),
+        color: z.string().default('blue'),
+      }),
+    )
+    .default([])
+    .volatile(),
+  /**
+   * Which sessions carry which tags.
+   *
+   * A flat list of `{ sessionId, tags }` rather than a map keyed by session id:
+   * a schema-declared map needs its key domain, and a list needs none. Entries
+   * with no tags are dropped by the browser half, so the list holds only tagged
+   * sessions.
+   */
+  assignments: z
+    .array(
+      z.object({
+        sessionId: z.string(),
+        tags: z.array(z.string()),
+      }),
+    )
+    .default([])
+    .volatile(),
 })
 
 /**
