@@ -1274,7 +1274,8 @@ test('the footer count is the browse list, not the raw store size', () => {
   // the classification instead. This is the regression guard for "1531 sessions".
   const source = readFileSync(join(root, 'client.js'), 'utf8')
   assert.ok(!/count: ids\.length/.test(source), 'the footer must not report the raw store size')
-  assert.equal((source.match(/count: listed,/g) ?? []).length, 2, 'both views report it')
+  // Every return path of the model reports the classified count.
+  assert.equal((source.match(/count: listed,/g) ?? []).length, 3, 'all three returns report it')
   assert.ok(source.includes("t('palette.subagentHidden'"), 'the gap must be explained')
 })
 
@@ -1282,12 +1283,12 @@ test('the footer count is the browse list, not the raw store size', () => {
 
 //#region the archive view
 
-test('the view ring cycles recents, pinned and archived', () => {
+test('the view ring cycles recents, workspaces, pinned and archived', () => {
   const ring = clientSource.match(/const VIEWS = \[([^\]]+)\]/)
   assert.ok(ring !== null, 'VIEWS must exist')
   assert.deepEqual(
     ring[1].split(',').map((part) => part.trim().replace(/'/g, '')),
-    ['recents', 'pinned', 'archived'],
+    ['recents', 'workspaces', 'pinned', 'archived'],
   )
   // With three views Tab must cycle, not toggle.
   assert.match(clientSource, /VIEWS\[\(index \+ step \+ VIEWS\.length\) % VIEWS\.length\]/)
@@ -1423,7 +1424,11 @@ test('the footer reports the browse list, not the raw store', () => {
     .map((child) => (typeof child === 'string' ? child : ''))
     .filter(Boolean)
     .join(' ')
-  assert.match(footer, /palette\.count\(\{"n":1\}\)/, 'the browse count is 1, not the raw 4')
+  assert.match(
+    footer,
+    /palette\.position\(\{"pos":1,"total":1\}\)/,
+    'the position counts the browse list, not the raw 4',
+  )
   assert.match(footer, /palette\.subagentHidden\(\{"n":1\}\)/, 'the subagent run is explained')
   assert.ok(!footer.includes('archivedHidden'), 'the drawer carries the archived count instead')
 })
@@ -1433,8 +1438,9 @@ test('the pinned badge counts pins the query does not match', () => {
     sessions: sessionsOf([{ id: 'p', title: 'Pinned thing' }, { id: 'x', title: 'Other' }]),
     workspaces: { pinnedSessionIds: ['p'] },
   })
+  // The ring is recents / workspaces / pinned / archived.
   const label = () => {
-    const button = ui.all('dsp-view')[1]
+    const button = ui.all('dsp-view')[2]
     return button.children.join('')
   }
   assert.match(label(), /view\.pinned\(\{"n":1\}\)/, 'the badge carries the live pin count')
@@ -1454,13 +1460,15 @@ test('Tab cycles the view ring and ⇧Tab walks it back', () => {
   const pressed = () => ui.all('dsp-view').findIndex((n) => n.props['aria-pressed'] === 'true')
   assert.equal(pressed(), 0, 'recents')
   ui.find('dsp-card').props.onKeyDown(press('Tab'))
-  assert.equal(pressed(), 1, 'pinned')
+  assert.equal(pressed(), 1, 'workspaces')
   ui.find('dsp-card').props.onKeyDown(press('Tab'))
-  assert.equal(pressed(), 2, 'archived')
+  assert.equal(pressed(), 2, 'pinned')
+  ui.find('dsp-card').props.onKeyDown(press('Tab'))
+  assert.equal(pressed(), 3, 'archived')
   ui.find('dsp-card').props.onKeyDown(press('Tab'))
   assert.equal(pressed(), 0, 'wraps to recents')
   ui.find('dsp-card').props.onKeyDown(press('Tab', { shiftKey: true }))
-  assert.equal(pressed(), 2, '⇧Tab goes backwards')
+  assert.equal(pressed(), 3, '⇧Tab goes backwards')
 })
 
 test('⌘⇧⌫ archives the highlighted row, and restores it from the drawer', async () => {
@@ -2428,6 +2436,120 @@ test('the rename mode bar names the session, and does not outlive the mode', () 
 
   ui.find('dsp-card').props.onKeyDown(press('Escape'))
   assert.equal(ui.find('dsp-modebar'), null)
+})
+
+//#endregion
+
+//#region finding your way around a long list
+
+test('group headings stick to the top, so the landmarks survive scrolling', () => {
+  // A landmark that scrolls away is not a landmark — and the background has to be
+  // opaque, or rows scroll through the label.
+  assert.match(
+    clientSource,
+    /\.dsp-group\{position:sticky;top:0;z-index:2;[^}]*background:var\(--dsw-alias-bg-layer-2\)/,
+  )
+})
+
+test('the footer says where you are, not just how many there are', () => {
+  const { ui } = paletteUi({
+    sessions: sessionsOf([{ id: 'a', title: 'A' }, { id: 'b', title: 'B' }, { id: 'c', title: 'C' }]),
+  })
+  const footer = () =>
+    ui
+      .find('dsp-footer')
+      .children[0].children.map((child) => (typeof child === 'string' ? child : ''))
+      .join('')
+
+  assert.match(footer(), /palette\.position\(\{"pos":1,"total":3\}\)/, 'first of three')
+  ui.find('dsp-card').props.onKeyDown(press('ArrowDown'))
+  assert.match(footer(), /palette\.position\(\{"pos":2,"total":3\}\)/, 'and it follows the highlight')
+})
+
+test('⌘↑ and ⌘↓ jump to the ends from anywhere', () => {
+  const { ui } = paletteUi({
+    sessions: sessionsOf([
+      { id: 'a', title: 'A' },
+      { id: 'b', title: 'B' },
+      { id: 'c', title: 'C' },
+    ]),
+  })
+  const active = () =>
+    ui
+      .all('dsp-row')
+      .filter((row) => row.props['aria-selected'] === 'true')
+      .map((row) => String(row.props.id).replace(/^dsp-opt-/, ''))
+
+  ui.find('dsp-card').props.onKeyDown(press('ArrowDown', { metaKey: true }))
+  assert.deepEqual(active(), ['c'], 'the last row')
+  ui.find('dsp-card').props.onKeyDown(press('ArrowUp', { metaKey: true }))
+  assert.deepEqual(active(), ['a'], 'and the first')
+})
+
+test('PgUp and PgDn move a screenful and stop at the ends', () => {
+  const many = Array.from({ length: 30 }, (_, index) => ({
+    id: `s${index}`,
+    title: `Session ${index}`,
+    updatedAt: 10_000 - index,
+  }))
+  const { ui } = paletteUi({ sessions: sessionsOf(many) })
+  const active = () =>
+    ui
+      .all('dsp-row')
+      .filter((row) => row.props['aria-selected'] === 'true')
+      .map((row) => String(row.props.id).replace(/^dsp-opt-/, ''))[0]
+
+  assert.equal(active(), 's0')
+  ui.find('dsp-card').props.onKeyDown(press('PageDown'))
+  assert.equal(active(), 's10', 'one page, not one row')
+  ui.find('dsp-card').props.onKeyDown(press('PageUp'))
+  assert.equal(active(), 's0')
+  // Clamped, not wrapped: a page that jumps back to the top reads as a bug.
+  ui.find('dsp-card').props.onKeyDown(press('PageUp'))
+  assert.equal(active(), 's0')
+  for (let step = 0; step < 5; step += 1) {
+    ui.find('dsp-card').props.onKeyDown(press('PageDown'))
+  }
+  assert.equal(active(), 's29', 'the last row, not back at the top')
+})
+
+test('an old row shows the date, a recent one shows how long ago', () => {
+  const day = 24 * 60 * 60 * 1000
+  const now = Date.now()
+  const { ui } = paletteUi({
+    sessions: {
+      ids: ['old', 'fresh'],
+      byId: {
+        old: { displayTitle: 'Old', updatedAt: now - 30 * day, blank: false, running: false },
+        fresh: { displayTitle: 'Fresh', updatedAt: now - 2 * 60 * 1000, blank: false, running: false },
+      },
+      phase: 'ready',
+      projectionsBySession: {},
+    },
+  })
+  // Freshest first, so the recent row leads.
+  const stamps = ui.all('dsp-rowsub').map((sub) => sub.children[2].children[0])
+  assert.match(stamps[0], /ago\.min/, 'a recent row stays relative')
+  // "23d" is a duration; the date you worked on it is what you remember.
+  assert.match(stamps[1], /stamp\.md/)
+})
+
+test('the workspace lens groups by folder, most recently touched first', () => {
+  const { ui } = paletteUi({
+    sessions: sessionsOf([
+      { id: 'a', title: 'Alpha', cwd: '/w/one', updatedAt: 5_000 },
+      { id: 'b', title: 'Beta', cwd: '/w/two', updatedAt: 4_000 },
+      { id: 'c', title: 'Gamma', cwd: '/w/one', updatedAt: 3_000 },
+    ]),
+  })
+  ui.find('dsp-card').props.onKeyDown(press('Tab')) // workspaces
+
+  assert.deepEqual(
+    ui.all('dsp-group').map((node) => node.children[0]),
+    ['one', 'two'],
+    'the folder is the heading, and the freshest group leads',
+  )
+  assert.deepEqual(rowTitles(ui), ['Alpha', 'Gamma', 'Beta'], 'members stay in recency order')
 })
 
 //#endregion

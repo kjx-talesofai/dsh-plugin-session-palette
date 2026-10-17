@@ -22,11 +22,12 @@ Press <kbd>⌘K</kbd> and get a **Spotlight-style session palette** instead of a
 
 **为什么做**：DSH 原本的 <kbd>⌘K</kbd> 是「展开侧边栏 → 展开搜索框 → 把焦点丢进左下角那个输入框」。要切换会话，视线得从正文移到屏幕角落，而且只能看到一个平铺列表。VS Code 的 <kbd>⌘P</kbd>、Sublime 的 <kbd>⌘P</kbd>、macOS 的 <kbd>⌘空格</kbd> 都是把它做成**视线所在处弹出的浮层**——因为切换会话是高频动作，值得一次专门的界面。
 
-**三个视图**（<kbd>Tab</kbd> 向前循环、<kbd>⇧Tab</kbd> 向后）：
+**四个视图**（<kbd>Tab</kbd> 向前循环、<kbd>⇧Tab</kbd> 向后）：
 
 | 视图 | 回答的问题 | 内容 |
 |---|---|---|
 | **最近**（默认） | 现在在发生什么 | 全部会话，按活跃度 + 时间分组 |
+| **工作区** | 我不记得标题，只记得那个目录 | 按目录分组，组头就是工作区名，最近碰过的排前面 |
 | **置顶** | 我留下过什么 | 你置顶的，**按置顶顺序**（最近置顶在前） |
 | **归档** | 我收起来过什么 | 已归档的，行变暗 |
 
@@ -38,7 +39,7 @@ Press <kbd>⌘K</kbd> and get a **Spotlight-style session palette** instead of a
 
 | 填入 | 形式 |
 |---|---|
-| GitHub | `github:kjx-talesofai/dsh-plugin-session-palette#v0.6.0`（当前可用） |
+| GitHub | `github:kjx-talesofai/dsh-plugin-session-palette#v0.7.0`（当前可用） |
 | 本地目录 | 绝对路径，例如 `/path/to/dsh-plugin-session-palette` |
 
 装完**重启桌面端**（host 半边只在启动时加载）。
@@ -57,6 +58,8 @@ Press <kbd>⌘K</kbd> and get a **Spotlight-style session palette** instead of a
 | <kbd>Tab</kbd> / <kbd>⇧Tab</kbd> | 循环三个视图 |
 | <kbd>⌘⇧P</kbd> | 置顶 / 取消置顶 |
 | <kbd>⌘⇧⌫</kbd> | 归档 / 恢复 |
+| <kbd>⌘↑</kbd> / <kbd>⌘↓</kbd> | 跳到第一条 / 最后一条（光标在哪儿都生效） |
+| <kbd>PgUp</kbd> / <kbd>PgDn</kbd> | 翻一屏（到底就停，不回头） |
 | <kbd>esc</kbd> | 关闭 |
 
 **注意事项**：
@@ -66,6 +69,9 @@ Press <kbd>⌘K</kbd> and get a **Spotlight-style session palette** instead of a
 - **标签存在插件的 Config 里**（volatile 字段），写在 profile 的 `cordis.patch.yml`，重启后还在。**每个会话最多 3 个**；标签是「文字 + 可选 emoji + 颜色」，颜色只用主题 token，所以亮/暗色都跟着走。
 - **点标签就是筛选**：面板里那排标签（只列真正用上的）点一下筛，再点一下取消，多个标签是「任一命中」。预览窗格里会话自己的标签也是同一个控件。
 - **行里的标签跟在标题后面**（`标题 🔥🧪`），因为扫列表时眼睛停在标题上，不是停在右边缘。
+- **长列表不会迷路**：分组标题是**吸顶**的（滚到哪都写着"今天/昨天/更早"），页脚左边写着**你在第几条**（`37 / 340`），超过一屏的跳转有 <kbd>⌘↑</kbd>/<kbd>⌘↓</kbd> 和 <kbd>PgUp</kbd>/<kbd>PgDn</kbd>。
+- **超过 7 天的行显示日期**（`9月12日`），不是 `23 天前`——"上个月那个"是日期问题。
+- **浮窗够大**：1180px / 88vh，左 60 右 40。它存在的意义就是让你在里面认真翻，缩手缩脚没道理。
 - **标签编辑器长在会话详情里，不长在搜索框里**。搜索框永远只搜会话；标签的输入框在右栏，是第二个输入框，所以"我在打标签还是我在搜会话"从来不用猜。第一版把搜索框兼职成标签筛选，被否掉了。
 - **列表永远是活的**：鼠标划过、点行都照常。标签编辑器属于它打开时的那一行——高亮一换，它就关掉，不会悄悄改到别的会话上。
 - **标签需要一次 DSH 重启才生效**：存储字段是本版新加的 host 字段，而 host 半边只在启动时读。没重启之前，选择器会直接说「标签需要重启一次 DSH」，不会假装保存成功。
@@ -97,6 +103,7 @@ The second problem is ordering. The host sorts sessions by `updatedAt`, which is
 | View | Question | Ordering |
 |---|---|---|
 | **Recents** | What is happening now? | Needs-you → Active → Today → Yesterday → Previous 7 days → Previous 30 days → Older |
+| **Workspaces** | I remember the folder, not the title | One group per workspace folder, freshest group first, recency inside |
 | **Pinned** | What did I keep? | Pin order, most recently pinned first |
 | **Archived** | What did I put away? | Most recently active first; rows are dimmed |
 
@@ -111,7 +118,7 @@ Use DSH's own **Add plugin** dialog. No npm account, no publishing.
 
 | Field | Value |
 |---|---|
-| GitHub | `github:kjx-talesofai/dsh-plugin-session-palette#v0.6.0` |
+| GitHub | `github:kjx-talesofai/dsh-plugin-session-palette#v0.7.0` |
 | Local directory | an absolute path, e.g. `/path/to/dsh-plugin-session-palette` |
 
 Restart the desktop app afterwards: the Host half is only loaded at startup. The browser half reloads with the page.
@@ -141,6 +148,16 @@ A tag is `id + label + optional emoji + colour`. Five colours, each a theme toke
 The editor is a **popover-like block inside the preview pane**, under the session's own tag chips: its own input, its own list, its own Escape. The search field keeps searching sessions the whole time, and the list is never frozen — moving the highlight simply closes the editor, because an editor belongs to the row it was opened on. That is the corrected model; the first version made the search field filter tags while the list was locked, and it was unusable for exactly the reason you would expect: two meanings on one field, and a target that could not be moved.
 
 **This needs one DSH restart.** The tag store is new host-side Config, and the Host reads `index.js` at startup — so until DSH restarts, the picker says "Tags need one DSH restart" and refuses to write. It never pretends to save.
+
+### Finding your way around a long list
+
+A palette that asks you to browse needs landmarks. Three, in order of how much they do:
+
+- **Sticky group headings.** After two screens the only thing left was a wall of identical rows; the heading now stays at the top of the scrollport, so "this is yesterday" is always on screen.
+- **A position, not just a total.** The footer reads `37 / 340` — the whole point is answering "am I lost?", which `340 sessions` cannot.
+- **Jumps that always work.** <kbd>⌘↑</kbd>/<kbd>⌘↓</kbd> go to the ends from anywhere (Home/End already did, but only once the caret reached an edge), and <kbd>PgUp</kbd>/<kbd>PgDn</kbd> move a screenful — clamped, because a page that jumps back to the top reads as a bug.
+
+Two smaller ones: rows older than a week show **the date you worked on them** rather than `23d` (a duration is not what you remember about last month), and the card is **1180px × 88vh** — this surface exists for browsing, so it should not be shy about space.
 
 ### Renaming
 
@@ -211,7 +228,7 @@ Upstream may change any of these. A failure in the shortcut contract is the one 
 ## Development
 
 ```sh
-npm test          # 101 tests, no install step required
+npm test          # 107 tests, no install step required
 ```
 
 There is deliberately **no build step**: `client.js` is the shipped browser bundle, and the Host half is a single `index.js`.

@@ -179,7 +179,10 @@ window.__ModuleLoader__.load({
      * happening, what did I keep, what did I put away — so they are views rather
      * than sections of one list. `Tab` cycles forwards and `⇧Tab` backwards.
      */
-    const VIEWS = ['recents', 'pinned', 'archived']
+    const VIEWS = ['recents', 'workspaces', 'pinned', 'archived']
+
+    /** One PgUp/PgDn step: roughly a screenful at the card's normal height. */
+    const PAGE_ROWS = 10
 
     /** How long the highlight must rest on a row before its projections load. */
     const PROJECTION_DWELL_MS = 200
@@ -378,6 +381,28 @@ window.__ModuleLoader__.load({
     }
 
     /** Render an elapsed-time label through a translate function. */
+    /**
+     * A row's timestamp: relative while it is recent, an actual date once it is not.
+     *
+     * "23d" is a duration; what you remember about a session from last month is the
+     * date you were working on it — the same reason a calendar shows dates and a
+     * stopwatch shows durations.
+     *
+     * @param t - translator.
+     * @param at - epoch ms.
+     * @param now - epoch ms.
+     * @returns the short stamp for a row's subtitle.
+     */
+    function stampText(t, at, now) {
+      const week = 7 * 24 * 60 * 60 * 1000
+      if (now - at < week) return agoText(t, at, now)
+      const date = new Date(at)
+      const sameYear = date.getFullYear() === new Date(now).getFullYear()
+      return sameYear
+        ? t('stamp.md', { m: date.getMonth() + 1, d: date.getDate() })
+        : t('stamp.ymd', { y: date.getFullYear(), m: date.getMonth() + 1, d: date.getDate() })
+    }
+
     function agoText(t, timestamp, now) {
       const parts = agoParts(timestamp, now)
       return parts.n === undefined ? t(parts.key) : t(parts.key, { n: parts.n })
@@ -679,7 +704,13 @@ window.__ModuleLoader__.load({
         'palette.emptyHint': 'Try a shorter query.',
         'palette.none': 'No sessions yet',
         'palette.count': '{n} sessions',
+        'palette.position': '{pos} / {total}',
+        'stamp.md': '{m}/{d}',
+        'stamp.ymd': '{y}/{m}/{d}',
         'view.recents': 'Recents',
+        'view.workspaces': 'Workspaces',
+        'workspaces.empty': 'No workspaces with sessions',
+        'workspaces.emptyHint': 'Sessions are grouped by the folder they live in.',
         'view.pinned': 'Pinned {n}',
         'view.archived': 'Archived {n}',
         'view.hint': 'tab switches',
@@ -764,7 +795,13 @@ window.__ModuleLoader__.load({
         'palette.emptyHint': '试试更短的词。',
         'palette.none': '还没有会话',
         'palette.count': '{n} 个会话',
+        'palette.position': '{pos} / {total}',
+        'stamp.md': '{m}月{d}日',
+        'stamp.ymd': '{y}年{m}月{d}日',
         'view.recents': '最近',
+        'view.workspaces': '工作区',
+        'workspaces.empty': '还没有带会话的工作区',
+        'workspaces.emptyHint': '会话按它所在的目录分组。',
         'view.pinned': '置顶 {n}',
         'view.archived': '归档 {n}',
         'view.hint': 'tab 切换',
@@ -856,8 +893,8 @@ window.__ModuleLoader__.load({
      * request named (Spotlight, Cmd+P).
      */
     const CSS = `
-.dsp-scrim{position:fixed;inset:0;z-index:40;display:flex;align-items:flex-start;justify-content:center;padding:clamp(56px,14vh,160px) 24px 24px;background:var(--dsw-alias-bg-mask-1)}
-.dsp-card{display:flex;flex-direction:column;width:min(920px,100%);max-height:min(560px,78vh);overflow:hidden;border:1px solid var(--dsw-alias-border-l2);border-radius:var(--dsw-radius-panel);background:var(--dsw-alias-bg-layer-2);box-shadow:var(--dsw-elevation-prominent);color:var(--dsw-alias-label-primary)}
+.dsp-scrim{position:fixed;inset:0;z-index:40;display:flex;align-items:flex-start;justify-content:center;padding:clamp(40px,8vh,96px) 24px 24px;background:var(--dsw-alias-bg-mask-1)}
+.dsp-card{display:flex;flex-direction:column;width:min(1180px,100%);max-height:min(880px,88vh);overflow:hidden;border:1px solid var(--dsw-alias-border-l2);border-radius:var(--dsw-radius-panel);background:var(--dsw-alias-bg-layer-2);box-shadow:var(--dsw-elevation-prominent);color:var(--dsw-alias-label-primary)}
 .dsp-inputrow{display:flex;align-items:center;gap:10px;padding:13px 16px;border-bottom:1px solid var(--dsw-alias-border-l2)}
 .dsp-input{flex:1;min-width:0;border:0;outline:0;background:transparent;color:inherit;font-size:15px;line-height:22px}
 .dsp-input::placeholder{color:var(--dsw-alias-label-tertiary)}
@@ -886,9 +923,12 @@ window.__ModuleLoader__.load({
 .dsp-toastbtn{flex:none;padding:3px 10px;border:1px solid var(--dsw-alias-border-l2);border-radius:var(--dsw-radius-sm);background:transparent;color:var(--dsw-alias-label-primary);font-size:12px;line-height:18px;cursor:pointer}
 .dsp-toastbtn:hover{background:var(--dsw-alias-interactive-bg-hover)}
 .dsp-body{display:flex;flex:1;min-height:0}
-.dsp-list{flex:1 1 58%;min-width:0;overflow:auto;padding:6px 6px 10px}
-.dsp-pane{flex:1 1 42%;min-width:0;overflow:auto;border-left:1px solid var(--dsw-alias-border-l2);padding:14px 16px}
-.dsp-group{margin:8px 0 2px;padding:0 10px;font-size:11px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;color:var(--dsw-alias-label-tertiary)}
+.dsp-list{flex:1 1 60%;min-width:0;overflow:auto;padding:0 6px 10px}
+.dsp-pane{flex:1 1 40%;min-width:0;overflow:auto;border-left:1px solid var(--dsw-alias-border-l2);padding:16px 18px}
+/* Sticky, because a landmark that scrolls away is not a landmark: after two
+   screens the only thing left was a wall of identical rows. The background has to
+   be opaque or the rows scroll through the label. */
+.dsp-group{position:sticky;top:0;z-index:2;margin:0;padding:7px 10px 4px;background:var(--dsw-alias-bg-layer-2);font-size:11px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;color:var(--dsw-alias-label-tertiary)}
 .dsp-row{display:flex;align-items:center;gap:10px;padding:7px 10px;border-radius:var(--dsw-radius-sm);cursor:pointer}
 .dsp-row[aria-selected="true"]{background:var(--dsw-alias-interactive-bg-hover)}
 /* Not opacity: at .62 the tertiary subtitle measured ~2:1. A weaker label
@@ -966,8 +1006,8 @@ window.__ModuleLoader__.load({
 .dsp-shimmer{height:12px;margin:8px 0;border-radius:4px;background:var(--dsw-alias-bg-skeleton);animation:dsp-pulse 1.4s ease-in-out infinite}
 .dsp-shimmer-short{width:60%}
 @keyframes dsp-pulse{0%,100%{opacity:.5}50%{opacity:1}}
-@media (max-width:700px){.dsp-pane{display:none}}
-@media (max-width:520px){.dsp-scrim{padding:24px 12px}.dsp-card{max-height:min(70vh,520px)}}
+@media (max-width:700px){.dsp-pane{display:none}.dsp-list{flex:1 1 100%}}
+@media (max-width:520px){.dsp-scrim{padding:24px 12px}.dsp-card{max-height:min(84vh,640px)}}
 @media (prefers-reduced-motion:reduce){.dsp-shimmer{animation:none}}
 `
 
@@ -1277,7 +1317,7 @@ window.__ModuleLoader__.load({
         // do with today, and an archived session is not part of the working set at
         // all. Neither may take space in the recency feed — that is the whole
         // reason separate views exist.
-        if (view !== 'recents') {
+        if (view === 'pinned' || view === 'archived') {
           const matched = (
             view === 'pinned'
               ? pinnedRows.slice().sort((left, right) => comparePinned(left, right))
@@ -1299,6 +1339,41 @@ window.__ModuleLoader__.load({
         }
 
         decorated.sort((left, right) => compareRows(left, right, needle !== ''))
+
+        // The workspace lens answers a different memory: you know the folder, not
+        // the title. Groups keep the order of their best row, because `decorated` is
+        // already sorted — so the workspace you touched last comes first.
+        if (view === 'workspaces') {
+          const order = []
+          const byWorkspace = new Map()
+          for (const row of decorated) {
+            const key = row.workspace === '' ? '—' : row.workspace
+            if (!byWorkspace.has(key)) {
+              byWorkspace.set(key, [])
+              order.push(key)
+            }
+            byWorkspace.get(key).push(row)
+          }
+          const rows = []
+          const groups = []
+          for (const key of order) {
+            if (rows.length >= ROW_LIMIT) break
+            const members = byWorkspace.get(key).slice(0, ROW_LIMIT - rows.length)
+            groups.push({ key: `w:${key}`, heading: key, rows: members })
+            rows.push(...members)
+          }
+          return {
+            groups,
+            rows,
+            total: decorated.length,
+            tagCounts,
+            pinnedTotal,
+            archivedTotal,
+            subagentHidden,
+            count: listed,
+            truncated: rows.length < decorated.length,
+          }
+        }
 
         const total = decorated.length
         const rows = decorated.slice(0, ROW_LIMIT)
@@ -1629,6 +1704,36 @@ window.__ModuleLoader__.load({
             pickView(VIEWS[(index + step + VIEWS.length) % VIEWS.length])
             return
           }
+          // ⌘↑/⌘↓ jump to the ends. Home/End already do, but only once the caret
+          // has reached the edge of the query — these work from anywhere, which is
+          // what a 200-row list needs.
+          if (
+            (event.key === 'ArrowUp' || event.key === 'ArrowDown') &&
+            (event.metaKey || event.ctrlKey) &&
+            !event.altKey &&
+            !event.shiftKey
+          ) {
+            event.preventDefault()
+            const rows = model.rows
+            if (rows.length > 0) {
+              setManualActiveId(event.key === 'ArrowDown' ? rows[rows.length - 1].id : rows[0].id)
+            }
+            return
+          }
+          // PgUp/PgDn are free in a single-line field, and one screen is the right
+          // step for a list this long. Clamped, not wrapped: a page that jumps back
+          // to the top reads as a bug.
+          if (event.key === 'PageDown' || event.key === 'PageUp') {
+            event.preventDefault()
+            const rows = model.rows
+            if (rows.length === 0) return
+            const index = rows.findIndex((row) => row.id === activeId)
+            const from = index === -1 ? 0 : index
+            const step = event.key === 'PageDown' ? PAGE_ROWS : -PAGE_ROWS
+            const next = Math.max(0, Math.min(rows.length - 1, from + step))
+            setManualActiveId(rows[next].id)
+            return
+          }
           if (event.key === 'ArrowDown') {
             event.preventDefault()
             move(1)
@@ -1892,7 +1997,7 @@ window.__ModuleLoader__.load({
                   { className: 'dsp-rowsub' },
                   h('span', null, row.workspace === '' ? '—' : row.workspace),
                   h('span', null, '·'),
-                  h('span', null, agoText(t, row.updatedAt, now)),
+                  h('span', null, stampText(t, row.updatedAt, now)),
                 ),
               ),
               row.tier === 0
@@ -2132,7 +2237,12 @@ window.__ModuleLoader__.load({
 
       const blankQuery = query.trim() === ''
       const emptyState =
-        view === 'pinned'
+        view === 'workspaces'
+          ? {
+              title: blankQuery ? t('workspaces.empty') : t('palette.empty'),
+              hint: blankQuery ? t('workspaces.emptyHint') : t('palette.emptyHint'),
+            }
+          : view === 'pinned'
           ? {
               title: blankQuery ? t('pinned.empty') : t('pinned.emptyMatch'),
               hint: t('pinned.emptyHint'),
@@ -2147,8 +2257,16 @@ window.__ModuleLoader__.load({
                 hint: blankQuery ? undefined : t('palette.emptyHint'),
               }
 
+      // Where you are, not just how many there are: "37 / 80" answers "am I lost?"
+      // in a way a bare total cannot.
+      const position =
+        activeId === null
+          ? null
+          : model.rows.findIndex((row) => row.id === activeId) + 1 || null
       const footerLeft = [
-        t('palette.count', { n: model.count }),
+        position === null
+          ? t('palette.count', { n: model.count })
+          : t('palette.position', { pos: position, total: model.total }),
         model.subagentHidden > 0
           ? t('palette.subagentHidden', { n: model.subagentHidden })
           : null,
@@ -2273,6 +2391,17 @@ window.__ModuleLoader__.load({
                 onClick: () => pickView('recents'),
               },
               t('view.recents'),
+            ),
+            h(
+              'button',
+              {
+                type: 'button',
+                tabIndex: -1,
+                className: 'dsp-view',
+                'aria-pressed': view === 'workspaces' ? 'true' : 'false',
+                onClick: () => pickView('workspaces'),
+              },
+              t('view.workspaces'),
             ),
             h(
               'button',

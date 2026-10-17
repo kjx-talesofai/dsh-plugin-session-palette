@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "Session Palette",
-    "description": "Cmd+K session palette: search by title/workspace/directory, rename in place, tag up to three times per session."
+    "description": "Cmd+K session palette: search by title/workspace/directory, browse by time or workspace, rename in place, tag up to three times per session."
   }
 }
