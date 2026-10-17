@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "会话面板",
-    "description": "⌘K 打开 Spotlight 式的会话面板：最近优先，正在运行与等待你的会话置顶，预览最后一个 turn，⌘⇧R 就地改名。"
+    "description": "⌘K 打开 Spotlight 式的会话面板；⌘⇧R 或双击标题就地给会话改名。"
   }
 }

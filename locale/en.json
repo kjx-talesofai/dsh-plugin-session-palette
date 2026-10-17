@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "Session Palette",
-    "description": "Cmd+K opens a Spotlight-style session palette: recent first, running and waiting sessions on top, with a last-turn preview and an in-place rename."
+    "description": "Cmd+K opens a Spotlight-style session palette, and a session renames in place with ⌘⇧R or a double click on its title."
   }
 }

@@ -277,6 +277,9 @@ function loadPlugin(options = {}) {
   const appended = []
   const removedStyles = []
 
+  // The double-click editor attaches its listener to the document, so the stub
+  // has to keep them: a no-op `addEventListener` made that path untestable.
+  const listeners = {}
   const document = {
     querySelector: () => null,
     createElement: () => ({
@@ -292,8 +295,15 @@ function loadPlugin(options = {}) {
     }),
     head: { appendChild: (element) => appended.push(element) },
     activeElement: null,
-    addEventListener() {},
-    removeEventListener() {},
+    addEventListener(type, listener) {
+      const bucket = (listeners[type] ??= [])
+      bucket.push(listener)
+    },
+    removeEventListener(type, listener) {
+      const bucket = listeners[type] ?? []
+      const index = bucket.indexOf(listener)
+      if (index !== -1) bucket.splice(index, 1)
+    },
     querySelectorAll: () => [],
     documentElement,
   }
@@ -364,6 +374,7 @@ function loadPlugin(options = {}) {
     id: captured.id,
     appended,
     removedStyles,
+    listeners,
     timers,
     flushTimers() {
       const pending = timers.splice(0)
@@ -429,6 +440,9 @@ function makeCtx(options = {}) {
         }
         return Promise.resolve(operation(reference))
       },
+      // How the shipped header, sidebar and rename command all answer "which
+      // session is current" — the plugin reads the same flag.
+      list: { getSnapshot: () => options.sessionList ?? { ids: [], byId: {} } },
     },
     workspaces: {
       list: { getSnapshot: () => ({ pinnedSessionIds, archivedSessionIds: [] }) },
@@ -690,12 +704,13 @@ test('registers into shell.overlay through slots.inject, not a bare register', (
   const { ctx, record } = makeCtx()
   loadPlugin().plugin.apply(ctx)
 
-  // Two entries in the same seat: the palette dialog and the action toast. The
-  // toast is separate on purpose so it outlives the palette.
-  assert.deepEqual(record.slotInjections, [SLOT, SLOT])
+  // Three entries in one seat, each mounted for a different reason: the palette
+  // dialog (⌘K), the action toast (it outlives the palette), and the header
+  // title editor (it must render while the palette is closed).
+  assert.deepEqual(record.slotInjections, [SLOT, SLOT, SLOT])
   assert.deepEqual(
     record.slotRegistrations.map((row) => row.options.id).sort(),
-    [ROW_ID, `${ROW_ID}.toast`],
+    [ROW_ID, `${ROW_ID}.title`, `${ROW_ID}.toast`],
   )
   const { options, component } = record.slotRegistrations.find((row) => row.options.id === ROW_ID)
   assert.equal(options.name, SLOT)
@@ -704,6 +719,11 @@ test('registers into shell.overlay through slots.inject, not a bare register', (
   assert.equal(typeof options.order, 'number')
   assert.equal(typeof component, 'function')
   assert.deepEqual(Object.keys(options.inject()), ['palette'])
+  for (const row of record.slotRegistrations) {
+    assert.equal(row.options.locale, NS, `${row.options.id} must localize itself`)
+    assert.equal(typeof row.options.inject, 'function')
+    assert.deepEqual(Object.keys(row.options.inject()), ['palette'])
+  }
 })
 
 test('claims the chord with a fixed registration and an observer', () => {
@@ -1806,6 +1826,170 @@ test('the rename chord leaves the host its own chords', () => {
   const empty = paletteUi({ sessions: sessionsOf([]) })
   empty.ui.find('dsp-card').props.onKeyDown(press('r', { shiftKey: true, metaKey: true }))
   assert.equal(empty.ui.find('dsp-input').props.role, 'combobox')
+})
+
+//#endregion
+
+//#region header title editor
+//
+// The second surface: double-clicking the conversation header's title. It floats
+// an input over the shipped `crumbCurrent` span rather than replacing any shipped
+// UI, so these tests cover the box it takes, the guards that keep it from racing
+// the sidebar's own double click, and the shared write path.
+
+/** A session list snapshot with one Session held by the main view. */
+function mainSession(id, title) {
+  return { ids: [id], byId: { [id]: { id, title, retainedBy: { mainView: 1 } } } }
+}
+
+/** A stand-in for the header's title span. */
+const TITLE_SPAN = { getBoundingClientRect: () => ({ left: 300, top: 40, width: 180, height: 28 }) }
+
+/** Mount the title-editor entry (it renders nothing until a double click). */
+function headerUi(options = {}) {
+  const loaded = loadPlugin()
+  const made = makeCtx(options.ctx)
+  loaded.plugin.apply(made.ctx)
+  const ui = mount(loaded, made.record, { entryId: `${ROW_ID}.title` })
+  return { loaded, ui, ...made }
+}
+
+/**
+ * Fire the document-level double click the component listens for.
+ *
+ * @param span - the element `closest()` should resolve, or null for "not the title".
+ */
+function doubleClick({ loaded, ui }, span) {
+  // The listener is attached by an effect, so the component has to have rendered.
+  ui.render()
+  const event = press('dblclick', {
+    target: {
+      closest: (selector) =>
+        span !== null && selector === '[class*="crumbCurrent"]' ? span : null,
+    },
+  })
+  for (const listener of loaded.listeners.dblclick ?? []) listener(event)
+  return event
+}
+
+test('double-clicking the header title opens an editor over that exact box', () => {
+  const made = headerUi({ ctx: { sessionList: mainSession('a', 'DSH 插件开发') } })
+  assert.equal(made.ui.render(), null, 'nothing until the gesture')
+
+  const event = doubleClick(made, TITLE_SPAN)
+  assert.equal(event.defaultPrevented, true, 'the gesture is ours')
+
+  const field = made.ui.find('dsp-title-edit')
+  assert.ok(field !== null, 'an input appears')
+  assert.equal(field.props.value, 'DSH 插件开发', 'seeded with the stored title')
+  assert.equal(field.props['aria-label'], 'rename.aria')
+  assert.deepEqual(
+    plain(field.props.style),
+    // 180px wide is the shipped crumb's max; the editor opens at a usable width
+    // and keeps the span's height so the text sits where the title was.
+    { left: '300px', top: '40px', width: '260px', height: '28px' },
+  )
+})
+
+test('a double click that is not the header title is left alone', () => {
+  const made = headerUi({ ctx: { sessionList: mainSession('a', 'Title') } })
+  // A sidebar row: the host already opens its own rename dialog on a double
+  // click, and a second handler here would race it.
+  const event = doubleClick(made, null)
+  assert.equal(event.defaultPrevented, false)
+  assert.equal(made.ui.render(), null)
+})
+
+test('the editor needs a current session, not just a title-looking element', () => {
+  // `crumbCurrent` is also the placeholder rendered when nothing is selected, so
+  // the span alone must not be enough: no main-view retain means no editor.
+  const made = headerUi({
+    ctx: { sessionList: { ids: ['a'], byId: { a: { title: 'X', retainedBy: { workspaceOperation: 1 } } } } },
+  })
+  doubleClick(made, TITLE_SPAN)
+  assert.equal(made.ui.render(), null)
+})
+
+test('Enter writes through the same retain path and closes the editor', async () => {
+  const made = headerUi({ ctx: { sessionList: mainSession('a', 'Old') } })
+  doubleClick(made, TITLE_SPAN)
+  made.ui.find('dsp-title-edit').props.onChange({ target: { value: '  New  ' } })
+  made.ui.find('dsp-title-edit').props.onKeyDown(press('Enter'))
+  await Promise.resolve()
+  await Promise.resolve()
+
+  assert.deepEqual(made.record.renames, [{ id: 'a', source: 'sessionPalette', title: 'New' }])
+  assert.equal(made.ui.find('dsp-title-edit'), null, 'the editor is gone')
+  assert.match(made.ui.palette.store.getSnapshot().notice.text, /rename\.done/)
+  // The toast is the palette's, so it renders in its own entry — and it offers
+  // Undo because there was a title to restore.
+  assert.ok(typeof made.ui.palette.store.getSnapshot().notice.undo === 'function')
+})
+
+test('Escape and blur both abandon the draft without a request', () => {
+  const made = headerUi({ ctx: { sessionList: mainSession('a', 'Old') } })
+
+  doubleClick(made, TITLE_SPAN)
+  const escape = press('Escape')
+  made.ui.find('dsp-title-edit').props.onKeyDown(escape)
+  assert.equal(escape.defaultPrevented, true)
+  assert.equal(escape.propagationStopped, true)
+  assert.equal(made.ui.find('dsp-title-edit'), null)
+
+  doubleClick(made, TITLE_SPAN)
+  made.ui.find('dsp-title-edit').props.onBlur()
+  assert.equal(made.ui.find('dsp-title-edit'), null, 'clicking away is a cancel, not a save')
+  assert.deepEqual(made.record.renames, [])
+})
+
+test('an unchanged or blank draft never reaches the host', () => {
+  const made = headerUi({ ctx: { sessionList: mainSession('a', 'Same') } })
+
+  doubleClick(made, TITLE_SPAN)
+  made.ui.find('dsp-title-edit').props.onKeyDown(press('Enter'))
+  assert.deepEqual(made.record.renames, [], 'an unchanged title is not a write')
+  assert.equal(made.ui.find('dsp-title-edit'), null)
+
+  doubleClick(made, TITLE_SPAN)
+  made.ui.find('dsp-title-edit').props.onChange({ target: { value: '   ' } })
+  made.ui.find('dsp-title-edit').props.onKeyDown(press('Enter'))
+  assert.deepEqual(made.record.renames, [], 'the host rejects an empty title; do not ask')
+  assert.ok(made.ui.find('dsp-title-edit') !== null, 'and the editor stays open')
+})
+
+test('a rejected rename keeps the box open with the reason under it', async () => {
+  const made = headerUi({
+    ctx: {
+      sessionList: mainSession('a', 'Old'),
+      renameResult: () => ({ ok: false, error: { message: 'session/title-invalid' } }),
+    },
+  })
+  doubleClick(made, TITLE_SPAN)
+  made.ui.find('dsp-title-edit').props.onChange({ target: { value: 'Nope' } })
+  made.ui.find('dsp-title-edit').props.onKeyDown(press('Enter'))
+  await Promise.resolve()
+  await Promise.resolve()
+
+  const field = made.ui.find('dsp-title-edit')
+  assert.equal(field.props.value, 'Nope', 'the draft survives')
+  const error = made.ui.find('dsp-title-error')
+  assert.equal(error.props.role, 'alert')
+  assert.match(error.children[0], /session\/title-invalid/)
+  // The bubble sits under the box, not somewhere else on the screen.
+  assert.equal(plain(error.props.style).top, '72px')
+})
+
+test('IME composition owns Enter in the header editor too', () => {
+  const made = headerUi({ ctx: { sessionList: mainSession('a', 'Old') } })
+  doubleClick(made, TITLE_SPAN)
+  made.ui.find('dsp-title-edit').props.onChange({ target: { value: '新名字' } })
+  made.ui.find('dsp-title-edit').props.onCompositionStart()
+  made.ui.find('dsp-title-edit').props.onKeyDown(press('Enter'))
+  assert.deepEqual(made.record.renames, [], 'committing mid-composition saves half a word')
+
+  made.ui.find('dsp-title-edit').props.onCompositionEnd()
+  made.ui.find('dsp-title-edit').props.onKeyDown(press('Enter'))
+  assert.equal(made.record.renames.length, 1)
 })
 
 //#endregion

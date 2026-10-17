@@ -1,8 +1,8 @@
 {
   "name": "dsh-plugin-session-palette",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "type": "module",
-  "description": "Make Cmd+K open a Spotlight-style session palette instead of focusing the sidebar search box, with an in-place rename.",
+  "description": "Make Cmd+K open a Spotlight-style session palette instead of focusing the sidebar search box, with in-place renaming from the palette or from the conversation title.",
   "license": "MIT",
   "author": "Jiaxin Kou <https://hypersampling.com>",
   "icon": "./assets/icon.svg",

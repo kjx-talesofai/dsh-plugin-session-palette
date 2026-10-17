@@ -4,7 +4,7 @@
 
 # dsh-plugin-session-palette
 
-Press <kbd>⌘K</kbd> and get a **Spotlight-style session palette** instead of a search box in the corner — recent first, running and waiting sessions on top, a preview of each session's **last turn** before you commit to opening it, and <kbd>⌘⇧R</kbd> to **rename the highlighted one in place**.
+Press <kbd>⌘K</kbd> and get a **Spotlight-style session palette** instead of a search box in the corner — recent first, running and waiting sessions on top, a preview of each session's **last turn** before you commit to opening it, and two ways to **rename a session in place** — <kbd>⌘⇧R</kbd> on the highlighted row, or a **double click on the title** at the top of an open conversation.
 
 <p align="center">
   <a href="https://github.com/kjx-talesofai/dsh-plugin-session-palette/releases"><img src="https://img.shields.io/github/v/release/kjx-talesofai/dsh-plugin-session-palette?label=release&style=flat-square&color=blue" alt="release"></a>
@@ -13,7 +13,7 @@ Press <kbd>⌘K</kbd> and get a **Spotlight-style session palette** instead of a
   <img src="https://img.shields.io/badge/DSH-%E2%89%A5%200.2.0--rc.1-blueviolet?style=flat-square" alt="DSH >= 0.2.0-rc.1">
 </p>
 
-> dsh-plugin-session-palette — ⌘K 弹出会话面板：最近优先，正在运行与等待你的置顶，预览最后一个 turn，⌘⇧R 就地改名
+> dsh-plugin-session-palette — ⌘K 弹出会话面板：最近优先，正在运行与等待你的置顶，预览最后一个 turn，⌘⇧R 或双击标题就地改名
 
 <details>
 <summary><b>中文说明（点开）</b> —— ⌘K 从「聚焦侧边栏搜索框」变成「蹦出一个会话面板」</summary>
@@ -38,7 +38,7 @@ Press <kbd>⌘K</kbd> and get a **Spotlight-style session palette** instead of a
 
 | 填入 | 形式 |
 |---|---|
-| GitHub | `github:kjx-talesofai/dsh-plugin-session-palette#v0.2.0`（当前可用） |
+| GitHub | `github:kjx-talesofai/dsh-plugin-session-palette#v0.3.0`（当前可用） |
 | 本地目录 | 绝对路径，例如 `/path/to/dsh-plugin-session-palette` |
 
 装完**重启桌面端**（host 半边只在启动时加载）。
@@ -52,6 +52,7 @@ Press <kbd>⌘K</kbd> and get a **Spotlight-style session palette** instead of a
 | <kbd>Home</kbd> <kbd>End</kbd> | 首 / 末（输入框光标已在两端时） |
 | <kbd>⏎</kbd> | 打开高亮的会话 |
 | <kbd>⌘⇧R</kbd> | 给高亮的会话**改名**（复用上面那个输入框，⏎ 保存 / esc 取消） |
+| **双击标题** | 在已经打开的会话里，双击顶部那个名字 → 就地弹出输入框改名 |
 | <kbd>Tab</kbd> / <kbd>⇧Tab</kbd> | 循环三个视图 |
 | <kbd>⌘⇧P</kbd> | 置顶 / 取消置顶 |
 | <kbd>⌘⇧⌫</kbd> | 归档 / 恢复 |
@@ -62,6 +63,7 @@ Press <kbd>⌘K</kbd> and get a **Spotlight-style session palette** instead of a
 - **它会接管 <kbd>⌘K</kbd>**，这是它存在的意义。侧边栏那个搜索按钮**照旧能用**（鼠标点），只是键盘快捷键让给了面板。
 - **改名不是新开一个输入框**：<kbd>⌘⇧R</kbd> 之后，你最上面那个搜索框**原地变成标题编辑框**（列表还按你原来的查询筛着，高亮还停在要改的那一行）。打完 <kbd>⏎</kbd> 保存，<kbd>esc</kbd> 放弃；失败时原因显示在输入框下面一行，草稿不会被吃掉。成功后的提示里带**撤销**。
 - **标题有字节上限**（DSH 默认 80 字节，中文约 26 个字）。超了 host 会截断，面板的提示报的是**实际存下来的标题**，不是你打的草稿。
+- **双击标题**是在宿主自己的标题元素上挂的监听（匹配 `crumbCurrent` 这个类名后缀），所以它是这一版里**唯一依赖宿主 DOM 的地方**：DSH 哪天把这个类名改了，双击会静默失效（⌘K → ⌘⇧R 那条路不受影响）。侧边栏那排会话的**双击归宿主管**（它弹自己的改名框），这里刻意不碰。
 - **它一个字都不改你的按键偏好**。接管走的是「固定键位」这条官方通道，只在内存里生效；所以**想关掉就干净地关掉**，没有需要还原的东西。
 - **它不做全文搜索**（还没做）。现在只匹配**会话标题**和工作区名，不匹配消息正文。所以找一个"聊过某个话题"的会话，暂时还得用侧边栏那个搜索。
 - **预览在旧会话上要等一下**：DSH 的 projection 缓存只覆盖约三分之二的会话，其余的是「很久没碰过的那些」。面板在高亮停留约 0.2 秒后才会去读它们（一次一行，不并发），所以快速划过时不会卡。
@@ -102,7 +104,7 @@ Use DSH's own **Add plugin** dialog. No npm account, no publishing.
 
 | Field | Value |
 |---|---|
-| GitHub | `github:kjx-talesofai/dsh-plugin-session-palette#v0.2.0` |
+| GitHub | `github:kjx-talesofai/dsh-plugin-session-palette#v0.3.0` |
 | Local directory | an absolute path, e.g. `/path/to/dsh-plugin-session-palette` |
 
 Restart the desktop app afterwards: the Host half is only loaded at startup. The browser half reloads with the page.
@@ -117,6 +119,7 @@ This plugin is **not published to npm**, and `npm install` is not the install pa
 4. <kbd>⏎</kbd> opens it. <kbd>Tab</kbd> switches to the Pinned or Archived drawer.
 5. <kbd>⌘⇧R</kbd> renames the highlighted session right there — the search field becomes the title field, <kbd>⏎</kbd> saves, <kbd>esc</kbd> cancels.
 6. <kbd>⌘⇧P</kbd> pins, <kbd>⌘⇧⌫</kbd> archives, and both toggle — so the same chord restores.
+7. In an open conversation, **double-click the title** in the header to rename it there — the same editor, floated over the title's own box.
 
 ### Renaming
 
@@ -163,6 +166,7 @@ The preview comes from the host's `turnOutline` projection, which already carrie
 - **Archiving a session with running work** is refused by the Host, and the palette reports it as a plain failure rather than offering the shipped stop-and-archive flow.
 - **A rename briefly opens the session.** Renaming requires a retained reference, and retaining starts the session's history open. Rename is an explicit one-shot action, so this is the same cost the shipped sidebar pays for its own row rename — but it is not free on a session you have never opened.
 - **The rename chord is the fixed part, not the title.** <kbd>⌘⇧R</kbd> is a local handler, so it only works while the palette has focus, and it is not rebindable.
+- **The header double click depends on one class name suffix.** `crumbCurrent` is a CSS-module class, so the hash changes between builds and the suffix does not; if DSH ever renames the suffix the gesture stops working silently. Nothing else breaks, and <kbd>⌘K</kbd> → <kbd>⌘⇧R</kbd> still renames.
 - **No session deletion**, ever — archived sessions are recoverable, which is what the Archived drawer is for.
 
 ## Compatibility
@@ -178,13 +182,14 @@ Verified against **DSH 0.2.0-rc.2** on macOS (Apple Silicon), in a real profile.
 | `sessions.using` → `reference.binding.session.rename`, and the host's "not live in this store" refusal | `dsh-api-session-controller`, `dsh-session-title` |
 | Native interception keyed on exact chord + modifiers, unmatched chords reaching the main frame | `lib/main.js` (`before-input-event`) |
 | `turnOutline` (per-turn prompt/response previews) | `dsh-session-turn-outline` |
+| `retainedBy.mainView` as "the current session" (the header's title span is found by its `crumbCurrent` class suffix) | `dsh-client-ui-workspace`, `dsh-client-ui-conversation` |
 
 Upstream may change any of these. A failure in the shortcut contract is the one to watch: it is silent rather than loud.
 
 ## Development
 
 ```sh
-npm test          # 74 tests, no install step required
+npm test          # 82 tests, no install step required
 ```
 
 There is deliberately **no build step**: `client.js` is the shipped browser bundle, and the Host half is a single `index.js`.

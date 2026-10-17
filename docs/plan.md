@@ -865,3 +865,62 @@ if (!priority && (main || !match)) return                  // ← 主框架：�
 - **归档会话也能改名**（没加拦截）：改名是元数据操作，不是打开；真被 host 拒了，错误会原样显示在输入框下面。
 - **没做字节计数器**：提示条报"实际存下的标题"已经足够诚实，再加一行实时计数属于为 80 字节这一个数字付界面成本。
 - **端到端手指验证仍是用户的**：本机沙箱里没有浏览器/ Electron 输入通道，⌘⇧R 真正到手、`rename` 真正落盘，靠的是"静态核对 + 74 条测试 + 你按一次"。
+
+---
+
+## 12. v0.3.0：双击标题改名（2026-10-18）
+
+用户给了一张截图指着会话头部那个标题："这里也能双击改名吗？"
+
+### 12.1 那个标题是什么
+
+`dsh-client-ui-conversation/lib/client.js` 的 `ConversationSessionHeader`：
+
+```jsx
+<nav class="…crumbs" aria-label={t('session.hierarchy')}>
+  {ancestry.map((summary, index) => {
+    const title = last
+      ? <span class="…crumb …crumbCurrent">{summary.displayTitle}</span>
+      : <button class="…crumb">…</button>
+    …
+  })}
+</nav>
+<div class="…headerActions">{renderSlot('conversation.session.header.actions')}</div>
+```
+
+| 想做的事 | 能不能用官方槽位 |
+| --- | --- |
+| 在标题旁边加一个按钮 | ✅ `conversation.session.header.actions`（list，`replaceRisk: none`，已装 agent-preset / subagent-catalog / job-list） |
+| **替换标题本身** | ❌ 标题不是槽位，是 header 组件自己画的 `<span>` |
+| `conversation.session.header.lineage` | ⚠️ 它**同时**是"子 agent 面包屑标题的替换位"（`renderSlot(…, { fallback: title })`）。占用它就要自己重画那些标题的样式（字号 12/18、颜色、截断），等于复刻宿主 UI |
+| 在标题上双击 | ❌ 没有任何槽位包住那段文字 |
+
+所以就地编辑只有两条路：**压一个输入框在标题的盒子上**，或者不做就地。选了前者。
+
+### 12.2 定位与触发
+
+- **触发**：`document` 上的 `dblclick`，`event.target.closest('[class*="crumbCurrent"]')`。
+  类名是 CSS module（实际值 `ST7X_W_crumbCurrent`），**哈希会变、后缀不会变**，所以只匹配后缀。
+  同一个类名也用在"没选会话时的占位 span"上 —— 那一步由下一个守卫挡掉。
+- **是哪个 session**：`retainedBy.mainView > 0`。这是宿主自己回答"当前会话是哪个"的方式
+  （`dsh-client-ui-workspace/lib/client.js:89` 的 `current()`、`:3027` 的 `mainSessionId`），
+  读同一个标志，插件与侧边栏、`session.rename` 命令不会各有一套"当前"的定义。
+- **位置**：`getBoundingClientRect()` 取自那个 span，输入框用 `position: fixed` 压在同一点上
+  （宽取 `max(rect.width, 260)`，并按视口右边界收窄）。**header 不重排**，字体/行高/字重照
+  `crumbCurrent` 的规则（14/20、500、4px 8px）。
+- **为什么不用 `disabled`**：禁用会丢焦点，写到一半就断了；用 `readOnly`。
+
+### 12.3 刻意不碰的东西
+
+- **侧边栏那排会话行的双击**。宿主自己接了（`onRenameRequest` → 它自己的改名对话框）。这里的监听
+  在 `closest` 返回 null 时就退出，**不会**和它抢。
+- **子 agent 面包屑**。它不是 `crumbCurrent`（是 `crumbSubagent`），双击不改名 —— 想改就从 ⌘K 里改。
+- **不注册任何新槽位**：这次只是多了一个 `shell.overlay` 条目（`session-palette.title`，order 940），
+  所以它有自己的挂载/卸载生命周期，和面板、toast 平级。
+
+### 12.4 诚实边界
+
+类名后缀是这一版**唯一**依赖宿主 DOM 结构的地方。DSH 若改了 `crumbCurrent`，双击会静默失效，
+而 ⌘K → ⌘⇧R 完全不受影响 —— 这是选"压浮层"而不是"复刻 header"时主动接受的代价。
+测试里 5 个 mutation（去掉 null 守卫、去掉 current 守卫、去掉 blur 取消、把选择器放宽到 `crumb`、
+去掉 `preventDefault`）都会让套件变红；**默认 82 条测试**。

@@ -90,6 +90,17 @@ window.__ModuleLoader__.load({
      */
     const RENAME_SOURCE = 'sessionPalette'
 
+    /**
+     * The conversation header's current-session title.
+     *
+     * A CSS-module class, so the hash in front of it changes between builds —
+     * matching on the suffix instead of the whole name is what keeps this working
+     * across DSH upgrades. `crumbCurrent` is also used for the placeholder shown
+     * when no Session is selected, and that case dies one guard later because
+     * there is no current Session to rename.
+     */
+    const TITLE_SELECTOR = '[class*="crumbCurrent"]'
+
     /** Rows rendered before the list is truncated, to keep 1500+ sessions cheap. */
     const ROW_LIMIT = 200
 
@@ -633,6 +644,11 @@ window.__ModuleLoader__.load({
 /* A rejected rename keeps the field open, so the reason needs a line of its own:
    the trailing chip is 11px and would ellipsize the one sentence that matters. */
 .dsp-renameerror{padding:7px 16px;border-bottom:1px solid var(--dsw-alias-border-l2);color:var(--dsw-alias-state-error-primary);font-size:11px;line-height:16px}
+/* The header title editor: the same box as the shipped crumbCurrent span it
+   covers (14px/20px, weight 500, 4px 8px padding), floated over it so the header
+   does not reflow while the title is being typed. */
+.dsp-title-edit{position:fixed;z-index:46;box-sizing:border-box;pointer-events:auto;margin:0;padding:0 8px;border:1px solid var(--dsw-alias-state-business-primary);border-radius:var(--dsw-radius-md);background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary);font-family:inherit;font-size:14px;line-height:20px;font-weight:500;outline:none;box-shadow:var(--dsw-elevation-prominent)}
+.dsp-title-error{position:fixed;z-index:46;box-sizing:border-box;pointer-events:auto;padding:4px 8px;border:1px solid var(--dsw-alias-border-l2);border-radius:var(--dsw-radius-sm);background:var(--dsw-alias-bg-module-platform);color:var(--dsw-alias-state-error-primary);font-size:11px;line-height:16px;box-shadow:var(--dsw-elevation-prominent)}
 .dsp-views{display:flex;align-items:center;gap:6px;padding:7px 16px;border-bottom:1px solid var(--dsw-alias-border-l2)}
 .dsp-view{padding:2px 10px;border:1px solid transparent;border-radius:999px;background:transparent;color:var(--dsw-alias-label-secondary);font-size:11px;line-height:18px;cursor:pointer}
 .dsp-view:hover{background:var(--dsw-alias-interactive-bg-hover)}
@@ -1628,6 +1644,190 @@ window.__ModuleLoader__.load({
 
     //#endregion
 
+    //#region header title
+
+    /**
+     * The conversation header's title, renamed in place by a double click.
+     *
+     * A floating editor rather than a slot contribution, and that is the whole
+     * design decision. The shipped header draws its own title span and puts no
+     * slot over it; the neighbouring seats are the action chips
+     * (`conversation.session.header.actions`) and the crumb replacement
+     * (`…header.lineage`, which also renders the titles of *subagent* ancestors —
+     * taking it over would mean re-implementing their styling). So the choice is
+     * between floating an input over the title or not being in place at all: this
+     * takes the span's own box, which is why it opens exactly where the text was,
+     * while the header keeps its layout.
+     *
+     * Everything after the box is shared with the palette: the same write path,
+     * the same toast with Undo, the same rule that a blank draft is never sent.
+     */
+    function HeaderTitleEditor(props) {
+      const t = typeof props.t === 'function' ? props.t : (key) => key
+      const palette = props.palette
+      const [editor, setEditor] = React.useState(null)
+      const fieldRef = React.useRef(null)
+      const composingRef = React.useRef(false)
+      const openSeq = React.useRef(0)
+
+      React.useEffect(() => {
+        if (typeof document === 'undefined' || typeof document.addEventListener !== 'function') {
+          return undefined
+        }
+        const onDoubleClick = (event) => {
+          const node = event.target
+          const span =
+            node !== null && node !== undefined && typeof node.closest === 'function'
+              ? node.closest(TITLE_SELECTOR)
+              : null
+          // Not the header title: the sidebar's own rows have a double click
+          // already (the host's rename dialog), and adding a second one here
+          // would race it.
+          if (span === null) return
+          const current = palette.currentSession()
+          if (current === null) return
+          const rect =
+            typeof span.getBoundingClientRect === 'function' ? span.getBoundingClientRect() : null
+          if (rect === null) return
+          event.preventDefault()
+          openSeq.current += 1
+          setEditor({
+            id: current.id,
+            seed: current.title,
+            draft: current.title,
+            left: rect.left,
+            top: rect.top,
+            width: rect.width,
+            height: rect.height,
+            nonce: openSeq.current,
+            busy: false,
+            error: null,
+          })
+        }
+        document.addEventListener('dblclick', onDoubleClick)
+        return () => document.removeEventListener('dblclick', onDoubleClick)
+      }, [palette])
+
+      // Seed the field selected, so the first keystroke replaces the old title
+      // instead of appending to it — the same promise the palette's editor makes.
+      const nonce = editor === null ? null : editor.nonce
+      React.useEffect(() => {
+        if (nonce === null) return
+        fieldRef.current?.focus?.()
+        fieldRef.current?.select?.()
+      }, [nonce])
+
+      const close = React.useCallback(() => {
+        // An in-flight write is not abandoned: it already left, and closing would
+        // hide a success the user cannot see happen.
+        setEditor((current) => (current === null || current.busy ? current : null))
+      }, [])
+
+      const commit = React.useCallback(() => {
+        if (editor === null || editor.busy) return
+        const draft = editor.draft.trim()
+        // The host refuses a title with no visible characters; asking anyway
+        // would cost a retain to learn that.
+        if (draft === '') return
+        if (draft === editor.seed.trim()) {
+          setEditor(null)
+          return
+        }
+        setEditor((current) => (current === null ? current : { ...current, busy: true, error: null }))
+        palette.rename(editor.id, draft, editor.seed).then(
+          () => setEditor(null),
+          (error) => {
+            setEditor((current) =>
+              current === null
+                ? current
+                : {
+                    ...current,
+                    busy: false,
+                    error: error instanceof Error ? error.message : String(error),
+                  },
+            )
+          },
+        )
+      }, [editor, palette])
+
+      if (editor === null) return null
+
+      const width = Math.max(editor.width, 260)
+      const viewport =
+        typeof window !== 'undefined' && typeof window.innerWidth === 'number'
+          ? window.innerWidth - editor.left - 12
+          : 0
+      const left = `${Math.round(editor.left)}px`
+      const top = `${Math.round(editor.top)}px`
+      const box = {
+        left,
+        top,
+        width: `${Math.round(viewport > 120 ? Math.min(width, viewport) : width)}px`,
+        height: `${Math.round(editor.height)}px`,
+      }
+      return h(
+        React.Fragment,
+        null,
+        h('input', {
+          ref: fieldRef,
+          className: 'dsp-title-edit',
+          style: box,
+          type: 'text',
+          value: editor.draft,
+          // Not `disabled`: a disabled field loses focus mid-write.
+          readOnly: editor.busy,
+          'aria-label': t('rename.aria'),
+          'aria-busy': editor.busy ? 'true' : undefined,
+          placeholder: t('rename.placeholder'),
+          spellCheck: false,
+          autoComplete: 'off',
+          onChange: (event) => {
+            const value = event.target.value
+            // Typing clears the last failure: it described the draft that was
+            // submitted, not the one being typed.
+            setEditor((current) =>
+              current === null ? current : { ...current, draft: value, error: null },
+            )
+          },
+          onKeyDown: (event) => {
+            if (event.key === 'Enter') {
+              event.preventDefault()
+              // An IME candidate is confirmed with Enter.
+              if (!composingRef.current && event.nativeEvent?.isComposing !== true) commit()
+              return
+            }
+            if (event.key === 'Escape') {
+              event.preventDefault()
+              event.stopPropagation()
+              close()
+            }
+          },
+          // Clicking anywhere else means "not now" — the same rule Finder's
+          // inline rename follows, and it never writes by accident.
+          onBlur: () => close(),
+          onCompositionStart: () => {
+            composingRef.current = true
+          },
+          onCompositionEnd: () => {
+            composingRef.current = false
+          },
+        }),
+        editor.error === null || editor.error === undefined
+          ? null
+          : h(
+              'div',
+              {
+                className: 'dsp-title-error',
+                role: 'alert',
+                style: { left, top: `${Math.round(editor.top + editor.height + 4)}px` },
+              },
+              editor.error,
+            ),
+      )
+    }
+
+    //#endregion
+
     //#region plugin
 
     /** Cordis services this plugin cannot run without. */
@@ -1803,6 +2003,31 @@ window.__ModuleLoader__.load({
             notify(t('pin.failed'))
           },
         )
+      }
+
+      /**
+       * The Session the main view is showing, or null.
+       *
+       * `retainedBy.mainView` is how the shipped header, the sidebar and the
+       * `session.rename` command all answer "which session is current" — reading
+       * the same flag keeps this plugin in agreement with them instead of
+       * inventing a fourth notion of "current".
+       *
+       * @returns the session id and its stored title, or null when nothing is open.
+       */
+      const currentSession = () => {
+        const list = ctx.sessions?.list
+        const byId =
+          typeof list?.getSnapshot === 'function' ? list.getSnapshot()?.byId : undefined
+        if (byId === null || byId === undefined) return null
+        for (const id of Object.keys(byId)) {
+          const row = byId[id]
+          if (row === null || row === undefined) continue
+          if ((row.retainedBy?.mainView ?? 0) > 0) {
+            return { id: String(id), title: typeof row.title === 'string' ? row.title : '' }
+          }
+        }
+        return null
       }
 
       /**
@@ -2063,6 +2288,7 @@ window.__ModuleLoader__.load({
         archiveRow,
         togglePin,
         rename: renameSession,
+        currentSession,
         dismissNotice,
         ensureProjections,
         cancelProjections,
@@ -2102,6 +2328,26 @@ window.__ModuleLoader__.load({
             ),
           ),
         `${NS}: toast entry`,
+      )
+
+      // A third entry in the same seat, and the only one that is not the palette:
+      // the double-click editor on the conversation header's title. It has to be
+      // its own entry because it must render while the palette is closed.
+      ctx.effect(
+        () =>
+          ctx.slots.inject(SLOT, () =>
+            ctx.slots.register(
+              {
+                name: SLOT,
+                id: `${ROW_ID}.title`,
+                order: 940,
+                locale: NS,
+                inject: () => ({ palette: paletteFace }),
+              },
+              HeaderTitleEditor,
+            ),
+          ),
+        `${NS}: title editor entry`,
       )
 
       ctx.effect(
