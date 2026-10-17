@@ -774,7 +774,14 @@ window.__ModuleLoader__.load({
         'tags.hint': '⏎ toggle · esc done',
         'tags.add': 'tag',
         'tags.filterPlaceholder': 'Filter or create a tag…',
-        'tags.editorHint': '⏎ toggles · ↑↓ moves · esc closes',
+        'tags.editorHint': '⏎ toggles · ↑↓ moves · ⌘⌫ deletes · esc closes',
+        'tags.delete': 'Delete this tag',
+        'tags.deleteAsk': 'Delete “{label}”? {n} sessions lose it.',
+        'tags.deleteOne': 'Delete “{label}”? It is on one session.',
+        'tags.deleteNone': 'Delete “{label}”? Nothing carries it.',
+        'tags.deleteYes': 'Delete',
+        'tags.deleteNo': 'Keep',
+        'tags.deleted': 'Deleted “{label}”',
         'tags.counter': '{n}/3',
         'tags.empty': 'No tags yet',
         'tags.emptyHint': 'Type a name and press ⏎ to create it.',
@@ -865,7 +872,14 @@ window.__ModuleLoader__.load({
         'tags.hint': '⏎ 切换 · esc 完成',
         'tags.add': '标签',
         'tags.filterPlaceholder': '筛选或新建标签…',
-        'tags.editorHint': '⏎ 切换 · ↑↓ 移动 · esc 关闭',
+        'tags.editorHint': '⏎ 切换 · ↑↓ 移动 · ⌘⌫ 删除 · esc 关闭',
+        'tags.delete': '删除这个标签',
+        'tags.deleteAsk': '删除「{label}」？{n} 个会话会失去它。',
+        'tags.deleteOne': '删除「{label}」？挂在 1 个会话上。',
+        'tags.deleteNone': '删除「{label}」？现在没有会话挂着它。',
+        'tags.deleteYes': '删除',
+        'tags.deleteNo': '保留',
+        'tags.deleted': '已删除「{label}」',
         'tags.counter': '{n}/3',
         'tags.empty': '还没有标签',
         'tags.emptyHint': '输入一个名字，按 ⏎ 新建。',
@@ -986,6 +1000,16 @@ window.__ModuleLoader__.load({
 .dsp-tagcheck{flex:none;width:14px;text-align:center;color:var(--dsw-alias-label-tertiary)}
 .dsp-taglabel{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .dsp-tagmeta{flex:none;font-size:11px;color:var(--dsw-alias-label-tertiary)}
+.dsp-tagdel{flex:none;width:18px;height:18px;padding:0;border:0;border-radius:var(--dsw-radius-xs);background:0 0;color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:18px;cursor:pointer;opacity:0}
+.dsp-tagrow:hover .dsp-tagdel,.dsp-tagrow[data-dsp-tagactive="true"] .dsp-tagdel{opacity:1}
+.dsp-tagdel:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-state-error-primary)}
+/* Deleting a tag takes a confirmation that names it AND says what it costs. The
+   strip sits under the list so the row itself keeps its width and its meaning. */
+.dsp-confirm{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:8px;padding:7px 8px;border:1px solid var(--dsw-alias-border-l3);border-radius:var(--dsw-radius-sm);background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary);font-size:11px;line-height:16px}
+.dsp-confirmtext{flex:1 1 100%;min-width:0}
+.dsp-confirmbtn{padding:2px 10px;border:1px solid var(--dsw-alias-border-l2);border-radius:var(--dsw-radius-sm);background:0 0;color:var(--dsw-alias-label-primary);font:inherit;font-size:11px;line-height:16px;cursor:pointer}
+.dsp-confirmbtn:hover{background:var(--dsw-alias-interactive-bg-hover)}
+.dsp-confirmbtn-danger{border-color:var(--dsw-alias-state-error-primary);color:var(--dsw-alias-state-error-primary)}
 /* The sidebar's own menu rows are the reference: same weight, same hover, so this
    entry does not look bolted on beside Pin/Rename/Fork/Archive. */
 .dsp-menuitem{display:flex;align-items:center;gap:8px;box-sizing:border-box;width:100%;padding:6px 10px;border:0;border-radius:var(--dsw-radius-sm);background:0 0;color:var(--dsw-alias-label-primary);font:inherit;font-size:13px;line-height:18px;text-align:left;cursor:pointer}
@@ -1565,7 +1589,7 @@ window.__ModuleLoader__.load({
         setTagEditor((current) => {
           if (current !== null) return null
           if (activeRow === null) return null
-          return { id: activeRow.id, draft: '', cursor: 0 }
+          return { id: activeRow.id, draft: '', cursor: 0, confirm: null }
         })
       }, [activeRow])
 
@@ -1653,6 +1677,46 @@ window.__ModuleLoader__.load({
         }
         applyTagOption(tagOptions[tagCursor])
       }, [applyTagOption, tagOptions, tagCursor, tags.ready, palette, t])
+
+      /** How many sessions carry a tag right now, for the delete confirmation. */
+      const countOnTag = React.useCallback(
+        (tagId) => Object.values(tags.assignments).filter((ids) => ids.includes(tagId)).length,
+        [tags.assignments],
+      )
+
+      /**
+       * Ask before deleting.
+       *
+       * Deleting a tag is not a session edit: it removes the tag from the
+       * vocabulary AND from every session that carried it, so the prompt states
+       * the cost in sessions. Arming is cheap and reversible; only Enter commits.
+       */
+      const armDelete = React.useCallback(() => {
+        const option = tagOptions[tagCursor]
+        if (option === undefined || option.kind !== 'tag') return
+        setTagEditor((current) =>
+          current === null ? current : { ...current, confirm: option.tag.id },
+        )
+      }, [tagOptions, tagCursor])
+
+      const disarmDelete = React.useCallback(() => {
+        setTagEditor((current) => (current === null ? current : { ...current, confirm: null }))
+      }, [])
+
+      const confirmDelete = React.useCallback(() => {
+        if (tagEditor === null || tagEditor.confirm === null) return
+        const tagId = tagEditor.confirm
+        const tag = tags.vocabulary.find((entry) => entry.id === tagId)
+        if (tag === undefined) return
+        setTagEditor((current) => (current === null ? current : { ...current, confirm: null }))
+        // A filter on a tag that no longer exists would show an empty list with no
+        // visible reason, so it goes with the tag.
+        setTagFilter((current) => current.filter((id) => id !== tagId))
+        palette.deleteTag(tagId).then((before) => {
+          if (before === null) return
+          palette.notify(t('tags.deleted', { label: tag.label }), () => palette.restoreTag(before))
+        })
+      }, [tagEditor, tags.vocabulary, palette, t])
 
       /** Filter means "any of these", which is how tags are used in practice. */
       const toggleTagFilter = React.useCallback((tagId) => {
@@ -1887,6 +1951,13 @@ window.__ModuleLoader__.load({
       // Rename still owns the search field (a title is one line, and the mode bar
       // names the row). Tags do not: a tag editor is a picker attached to the item,
       // so it lives in the preview pane and the field stays a search field.
+      const armedTag =
+        tagEditor === null || tagEditor.confirm === null || tagEditor.confirm === undefined
+          ? null
+          : (tagIndex.get(tagEditor.confirm) ?? null)
+      const armedCount = armedTag === null ? 0 : countOnTag(armedTag.id)
+
+      // One field, three jobs gone: rename owns the field, tags live in the pane.
       const mode = rename !== null ? 'rename' : 'search'
 
       /** The label list for a row's glyph strip, used as its accessible name. */
@@ -2101,6 +2172,38 @@ window.__ModuleLoader__.load({
                   )
                 },
                 onKeyDown: (event) => {
+                  // A confirmation is armed: Enter commits, Escape backs out of the
+                  // CONFIRMATION (not out of the editor), and nothing else types.
+                  if (tagEditor !== null && tagEditor.confirm !== null) {
+                    if (event.key === 'Enter') {
+                      event.preventDefault()
+                      confirmDelete()
+                      return
+                    }
+                    if (event.key === 'Escape') {
+                      event.preventDefault()
+                      disarmDelete()
+                      return
+                    }
+                    if (event.key === 'Tab') {
+                      event.preventDefault()
+                      closeTagEditor()
+                      return
+                    }
+                    event.preventDefault()
+                    return
+                  }
+                  // ⌘⌫ / ⌃⌫: the list convention for "delete this row", and the
+                  // chord a text field would otherwise spend on "delete to line
+                  // start" — which is meaningless in a one-line filter.
+                  if (
+                    (event.key === 'Backspace' || event.key === 'Delete') &&
+                    (event.metaKey || event.ctrlKey)
+                  ) {
+                    event.preventDefault()
+                    armDelete()
+                    return
+                  }
                   // The card ignores events from this input by target, so the keys
                   // that would otherwise cycle views or move the list are handled
                   // here: Tab and Escape both leave the editor.
@@ -2155,7 +2258,15 @@ window.__ModuleLoader__.load({
                           current === null ? current : { ...current, cursor: index },
                         )
                       },
-                      onClick: () => applyTagOption(option),
+                      onClick: () => {
+                        // Clicking anywhere in the list means "I am done with that
+                        // question", so the pending confirmation is dropped.
+                        if (tagEditor !== null && tagEditor.confirm !== null) {
+                          disarmDelete()
+                          return
+                        }
+                        applyTagOption(option)
+                      },
                     },
                     h('span', { className: 'dsp-tagcheck' }, tag === null ? '＋' : assigned ? '✓' : ''),
                     tag === null || tag.emoji === ''
@@ -2178,9 +2289,62 @@ window.__ModuleLoader__.load({
                       { className: 'dsp-tagmeta' },
                       tag === null ? '' : t('tags.count', { n: model.tagCounts.get(tag.id) ?? 0 }),
                     ),
+                    // Only a real tag can be deleted; the create row has nothing to
+                    // delete yet.
+                    tag === null
+                      ? null
+                      : h(
+                          'button',
+                          {
+                            type: 'button',
+                            tabIndex: -1,
+                            className: 'dsp-tagdel',
+                            title: t('tags.delete'),
+                            'aria-label': `${t('tags.delete')}: ${tag.label}`,
+                            onMouseDown: (event) => event.preventDefault(),
+                            onClick: (event) => {
+                              event.stopPropagation()
+                              setTagEditor((current) =>
+                                current === null
+                                  ? current
+                                  : { ...current, cursor: index, confirm: tag.id },
+                              )
+                            },
+                          },
+                          '×',
+                        ),
                   )
                 }),
               ),
+              armedTag === null
+                ? null
+                : h(
+                    'div',
+                    { className: 'dsp-confirm', role: 'alertdialog' },
+                    h(
+                      'span',
+                      { className: 'dsp-confirmtext' },
+                      armedCount === 0
+                        ? t('tags.deleteNone', { label: armedTag.label })
+                        : armedCount === 1
+                          ? t('tags.deleteOne', { label: armedTag.label })
+                          : t('tags.deleteAsk', { label: armedTag.label, n: armedCount }),
+                    ),
+                    h(
+                      'button',
+                      {
+                        type: 'button',
+                        className: 'dsp-confirmbtn dsp-confirmbtn-danger',
+                        onClick: confirmDelete,
+                      },
+                      t('tags.deleteYes'),
+                    ),
+                    h(
+                      'button',
+                      { type: 'button', className: 'dsp-confirmbtn', onClick: disarmDelete },
+                      t('tags.deleteNo'),
+                    ),
+                  ),
               h('div', { className: 'dsp-tagmeta' }, t('tags.editorHint')),
             ),
           )
@@ -2889,6 +3053,90 @@ window.__ModuleLoader__.load({
       }
 
       /**
+       * Write several Config fields in one mutation.
+       *
+       * Deleting a tag touches the vocabulary AND every assignment, and a half
+       * applied pair would leave assignments pointing at a tag that no longer
+       * exists. `mutate` carries both operations under one revision, so the store
+       * can never be read in between.
+       *
+       * @param ops - ordered `{ op: 'set', path: [field], value }` operations.
+       * @returns whether the Host accepted them.
+       */
+      const writeTagFields = (ops) => {
+        if (form === undefined) {
+          notify(t('tags.failed'))
+          return Promise.resolve(false)
+        }
+        const call =
+          typeof form.mutate === 'function'
+            ? form.mutate(ops)
+            : ops.reduce(
+                (chain, op) => chain.then(() => form.set(op.path[0], op.value)),
+                Promise.resolve(true),
+              )
+        return Promise.resolve(call).then(
+          (accepted) => {
+            if (accepted === false) {
+              syncTags()
+              notify(t('tags.failed'))
+            }
+            return accepted !== false
+          },
+          (error) => {
+            console.warn(`${NS}: tag delete failed`, error)
+            syncTags()
+            notify(t('tags.failed'))
+            return false
+          },
+        )
+      }
+
+      /**
+       * Delete a tag from the vocabulary, and from every session that carried it.
+       *
+       * Removing it from the sessions is the whole point: a row of config left
+       * pointing at a tag that no longer exists is a phantom, and the palette would
+       * have to filter it out anyway.
+       *
+       * @param tagId - the tag to delete.
+       * @returns the deleted tag and the assignments it was removed from, for Undo,
+       *   or null when there was nothing to delete.
+       */
+      const deleteTag = (tagId) => {
+        const tag = tagCache.vocabulary.find((entry) => entry.id === tagId)
+        if (tag === undefined) return Promise.resolve(null)
+        const before = { tag, assignments: { ...tagCache.assignments } }
+        const vocabulary = tagCache.vocabulary.filter((entry) => entry.id !== tagId)
+        const assignments = {}
+        for (const [sessionId, ids] of Object.entries(tagCache.assignments)) {
+          const kept = ids.filter((id) => id !== tagId)
+          if (kept.length > 0) assignments[sessionId] = kept
+        }
+        publishTags({ ...tagCache, vocabulary, assignments })
+        return writeTagFields([
+          { op: 'set', path: ['tags'], value: vocabulary },
+          { op: 'set', path: ['assignments'], value: assignmentList(assignments) },
+        ]).then((accepted) => (accepted ? before : null))
+      }
+
+      /**
+       * Put a deleted tag back, with the sessions it came off.
+       *
+       * @param before - what `deleteTag` captured.
+       */
+      const restoreTag = (before) => {
+        if (before === null || before === undefined) return
+        const vocabulary = [...tagCache.vocabulary, before.tag]
+        const assignments = { ...tagCache.assignments, ...before.assignments }
+        publishTags({ ...tagCache, vocabulary, assignments })
+        writeTagFields([
+          { op: 'set', path: ['tags'], value: vocabulary },
+          { op: 'set', path: ['assignments'], value: assignmentList(assignments) },
+        ])
+      }
+
+      /**
        * Add or remove one tag on one session.
        *
        * @param sessionId - which session.
@@ -3355,6 +3603,8 @@ window.__ModuleLoader__.load({
         currentSession,
         toggleTag,
         createTag,
+        deleteTag,
+        restoreTag,
         openTags,
         clearTagRequest,
         dismissNotice,

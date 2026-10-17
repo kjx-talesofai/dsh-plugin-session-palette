@@ -39,7 +39,7 @@ Press <kbd>⌘K</kbd> and get a **Spotlight-style session palette** instead of a
 
 | 填入 | 形式 |
 |---|---|
-| GitHub | `github:kjx-talesofai/dsh-plugin-session-palette#v0.7.0`（当前可用） |
+| GitHub | `github:kjx-talesofai/dsh-plugin-session-palette#v0.8.0`（当前可用） |
 | 本地目录 | 绝对路径，例如 `/path/to/dsh-plugin-session-palette` |
 
 装完**重启桌面端**（host 半边只在启动时加载）。
@@ -67,6 +67,7 @@ Press <kbd>⌘K</kbd> and get a **Spotlight-style session palette** instead of a
 - **它会接管 <kbd>⌘K</kbd>**，这是它存在的意义。侧边栏那个搜索按钮**照旧能用**（鼠标点），只是键盘快捷键让给了面板。
 - **改名不是新开一个输入框**：<kbd>⌘⇧R</kbd> 之后，你最上面那个搜索框**原地变成标题编辑框**（列表还按你原来的查询筛着，高亮还停在要改的那一行）。打完 <kbd>⏎</kbd> 保存，<kbd>esc</kbd> 放弃；失败时原因显示在输入框下面一行，草稿不会被吃掉。成功后的提示里带**撤销**。
 - **标签存在插件的 Config 里**（volatile 字段），写在 profile 的 `cordis.patch.yml`，重启后还在。**每个会话最多 3 个**；标签是「文字 + 可选 emoji + 颜色」，颜色只用主题 token，所以亮/暗色都跟着走。
+- **删除标签会先问一次，并告诉你代价**：`删除「dev」？3 个会话会失去它。` 确认后，标签从词表**和每一个挂着它的会话上**一起移除（一次原子写入，不会留下指向已消失标签的分配）；删除后的提示条里有**撤销**，会把标签和那些会话一起放回来。
 - **点标签就是筛选**：面板里那排标签（只列真正用上的）点一下筛，再点一下取消，多个标签是「任一命中」。预览窗格里会话自己的标签也是同一个控件。
 - **行里的标签跟在标题后面**（`标题 🔥🧪`），因为扫列表时眼睛停在标题上，不是停在右边缘。
 - **长列表不会迷路**：分组标题是**吸顶**的（滚到哪都写着"今天/昨天/更早"），页脚左边写着**你在第几条**（`37 / 340`），超过一屏的跳转有 <kbd>⌘↑</kbd>/<kbd>⌘↓</kbd> 和 <kbd>PgUp</kbd>/<kbd>PgDn</kbd>。
@@ -118,7 +119,7 @@ Use DSH's own **Add plugin** dialog. No npm account, no publishing.
 
 | Field | Value |
 |---|---|
-| GitHub | `github:kjx-talesofai/dsh-plugin-session-palette#v0.7.0` |
+| GitHub | `github:kjx-talesofai/dsh-plugin-session-palette#v0.8.0` |
 | Local directory | an absolute path, e.g. `/path/to/dsh-plugin-session-palette` |
 
 Restart the desktop app afterwards: the Host half is only loaded at startup. The browser half reloads with the page.
@@ -190,7 +191,7 @@ The preview comes from the host's `turnOutline` projection, which already carrie
 
 ## What it does not reach
 
-- **No tag editor yet.** Tags are created from the picker (label only, colour assigned in a ring); there is no UI yet for emoji, colour or renaming a tag — that is the next release. The Config page in Plugin management shows the raw data in the meantime.
+- **No tag editor yet.** Tags are created from the picker (label only, colour assigned in a ring) and can be deleted there; there is still no UI for emoji, colour or renaming a tag — that is the next release. The Config page in Plugin management shows the raw data in the meantime.
 - **No content search yet.** Matching covers the session title, the workspace name and the workspace path. The message-body search the shipped sidebar performs is not wired in.
 - **No query language yet.** `@workspace`, `is:archived`, `after:7d` and filter chips are designed but not implemented.
 - **No settings UI yet.** The one switch (`takeOver`) lives in your profile's `cordis.patch.yml`:
@@ -228,7 +229,7 @@ Upstream may change any of these. A failure in the shortcut contract is the one 
 ## Development
 
 ```sh
-npm test          # 107 tests, no install step required
+npm test          # 113 tests, no install step required
 ```
 
 There is deliberately **no build step**: `client.js` is the shipped browser bundle, and the Host half is a single `index.js`.

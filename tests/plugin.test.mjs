@@ -432,6 +432,16 @@ function makeCtx(options = {}) {
       for (const listener of [...configSubscribers]) listener()
       return Promise.resolve(true)
     },
+    // The atomic multi-field write deleting a tag needs.
+    mutate: (ops) => {
+      configWrites.push({ ops })
+      if (options.refuseWrites === true) return Promise.resolve(false)
+      for (const op of ops) {
+        if (op.op === 'set') configStore = { ...configStore, [op.path[0]]: op.value }
+      }
+      for (const listener of [...configSubscribers]) listener()
+      return Promise.resolve(true)
+    },
   }
   const services = {
     sessions: {
@@ -2550,6 +2560,106 @@ test('the workspace lens groups by folder, most recently touched first', () => {
     'the folder is the heading, and the freshest group leads',
   )
   assert.deepEqual(rowTitles(ui), ['Alpha', 'Gamma', 'Beta'], 'members stay in recency order')
+})
+
+//#endregion
+
+//#region deleting a tag
+
+/** The tag editor with the cursor on the first (tagged) entry. */
+function armedUi(options = {}) {
+  const made = tagUi(options)
+  made.ui.find('dsp-taginput').props.onKeyDown(
+    press('Backspace', { metaKey: true }),
+  )
+  return made
+}
+
+test('⌘⌫ asks first, and names what the delete costs', () => {
+  const { ui, record } = armedUi()
+  const confirm = ui.find('dsp-confirm')
+  assert.ok(confirm !== null, 'a confirmation appears')
+  assert.equal(confirm.props.role, 'alertdialog')
+  assert.deepEqual(
+    confirm.children[0].children,
+    ['tags.deleteOne({"label":"important"})'.replace('important', '重要')],
+    'the prompt names the tag and the one session that loses it',
+  )
+  assert.deepEqual(record.configWrites, [], 'nothing is written by asking')
+  assert.ok(ui.find('dsp-tageditor') !== null, 'and the editor is still there')
+})
+
+test('Escape backs out of the confirmation, not out of the editor', () => {
+  const { ui, record } = armedUi()
+  ui.find('dsp-taginput').props.onKeyDown(press('Escape'))
+  assert.equal(ui.find('dsp-confirm'), null, 'the question is gone')
+  assert.ok(ui.find('dsp-tageditor') !== null, 'the editor is not')
+  assert.deepEqual(record.configWrites, [])
+})
+
+test('Enter deletes the tag and every assignment that names it, in one write', async () => {
+  const { ui, record } = armedUi()
+  ui.find('dsp-taginput').props.onKeyDown(press('Enter'))
+  // The delete settles through the write, its acceptance, and the notice.
+  for (let tick = 0; tick < 6; tick += 1) await Promise.resolve()
+
+  const write = record.configWrites.find((entry) => entry.ops !== undefined)
+  assert.ok(write !== undefined, 'one mutation, not two racing writes')
+  assert.deepEqual(plain(write.ops), [
+    { op: 'set', path: ['tags'], value: [
+      { id: 'lab', label: '实验', emoji: '', color: 'blue' },
+      { id: 'later', label: '以后', emoji: '', color: 'gray' },
+      { id: 'fourth', label: '第四个', emoji: '', color: 'green' },
+    ] },
+    // Session a carried only that tag, so its assignment entry is dropped rather
+    // than left behind as an empty list.
+    { op: 'set', path: ['assignments'], value: [] },
+  ])
+  assert.equal(ui.all('dsp-tagrow').length, 3, 'the row is gone from the list')
+  assert.match(ui.palette.store.getSnapshot().notice.text, /tags\.deleted/)
+})
+
+test('the × on a row asks the same question', () => {
+  const { ui, record } = tagUi()
+  const deleteButton = ui.all('dsp-tagdel')[1] // "实验"
+  assert.ok(deleteButton !== undefined)
+  deleteButton.props.onClick({ stopPropagation() {} })
+  assert.match(
+    ui.find('dsp-confirm').children[0].children[0],
+    /tags\.deleteNone/,
+    'nothing carries it, and the prompt says so instead of "0 sessions"',
+  )
+  assert.deepEqual(record.configWrites, [])
+})
+
+test('deleting the tag the list is filtered by clears the filter', () => {
+  const { ui } = tagUi()
+  // Close the editor, filter by the tag, then reopen and delete it.
+  ui.find('dsp-taginput').props.onKeyDown(press('Escape'))
+  ui.all('dsp-chip')[0].props.onClick()
+  assert.deepEqual(rowTitles(ui), ['Tagged one'])
+  ui.find('dsp-addtag').props.onClick()
+  ui.find('dsp-taginput').props.onKeyDown(press('Backspace', { metaKey: true }))
+  ui.find('dsp-taginput').props.onKeyDown(press('Enter'))
+  assert.deepEqual(rowTitles(ui), ['Tagged one', 'Plain one'], 'both rows are back')
+})
+
+test('a deleted tag can be undone, with the sessions it came off', async () => {
+  const { ui, record } = armedUi()
+  ui.find('dsp-taginput').props.onKeyDown(press('Enter'))
+  for (let tick = 0; tick < 6; tick += 1) await Promise.resolve()
+
+  const notice = ui.palette.store.getSnapshot().notice
+  assert.ok(typeof notice.undo === 'function', 'the toast offers Undo')
+  notice.undo()
+  await Promise.resolve()
+
+  const restore = record.configWrites.filter((entry) => entry.ops !== undefined).pop()
+  assert.deepEqual(
+    plain(restore.ops[1].value),
+    [{ sessionId: 'a', tags: ['fire'] }],
+    'the assignment comes back too',
+  )
 })
 
 //#endregion
