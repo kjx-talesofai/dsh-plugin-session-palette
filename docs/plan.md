@@ -1133,3 +1133,17 @@ const MenuItemButton = (() => { try { … } catch { return null } })()
 ### 17.6 数字
 
 113 条测试（原 107）。4 个 mutation：不问就删 / 分配保留死 id / 拆成两次写入 / esc 直接关编辑器 —— 分别红 5、1、1、1 条。
+
+## 18. v0.8.1：兼容性是核过的，不是抄的（2026-10-18）
+
+上一版的 README 写着"实测于 DSH 0.2.0-rc.2"，而桌面端在 10-17 已经升到 **0.2.1-rc.2**。这句话于是变成了一个没人维护的断言 —— 它不会报错，但它在骗人。
+
+这一版只做核对与登记，没有功能改动：
+
+- **端到端仍然成立**：0.8.0 的改名、标签、长列表就是在这台机器的 0.2.1-rc.2 上验的，所以中文那句"实测范围"直接改成当前版本。
+- **锚点还在**：双击标题依赖的 `crumbCurrent` 类名后缀，在 0.2.1-rc.2 的 `dsh-client-ui-conversation` 里仍然是 `<hash>_crumbCurrent`。这条写进了 Compatibility 表，因为它是唯一依赖宿主 DOM 的地方。
+- **其余契约逐个复核**：`shell.overlay`、`sidebar.workspaces.session.menu.item`（本插件的 `session-palette.tags` 行仍以 order 460 挂在里面）、`sessions.using`、`registerFixed`、`turnOutline` —— 都在。核对方法是 Cordis Inspect 的只读查询，不是读代码猜。
+
+顺带补了 `repository` / `homepage` / `bugs` 三个字段：包里一直缺，GitHub 页面上也没有仓库链接。
+
+没有新增测试（114 → 113 也没变，功能没动）。

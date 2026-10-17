@@ -1,10 +1,16 @@
 {
   "name": "dsh-plugin-session-palette",
-  "version": "0.8.0",
+  "version": "0.8.1",
   "type": "module",
   "description": "Make Cmd+K open a Spotlight-style session palette instead of focusing the sidebar search box, with in-place renaming and up to three tags per session.",
   "license": "MIT",
   "author": "Jiaxin Kou <https://hypersampling.com>",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kjx-talesofai/dsh-plugin-session-palette.git"
+  },
+  "homepage": "https://github.com/kjx-talesofai/dsh-plugin-session-palette",
+  "bugs": "https://github.com/kjx-talesofai/dsh-plugin-session-palette/issues",
   "icon": "./assets/icon.svg",
   "main": "index.js",
   "exports": {

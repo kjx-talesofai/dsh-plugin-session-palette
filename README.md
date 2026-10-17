@@ -39,7 +39,7 @@ Press <kbd>⌘K</kbd> and get a **Spotlight-style session palette** instead of a
 
 | 填入 | 形式 |
 |---|---|
-| GitHub | `github:kjx-talesofai/dsh-plugin-session-palette#v0.8.0`（当前可用） |
+| GitHub | `github:kjx-talesofai/dsh-plugin-session-palette#v0.8.1`（当前可用） |
 | 本地目录 | 绝对路径，例如 `/path/to/dsh-plugin-session-palette` |
 
 装完**重启桌面端**（host 半边只在启动时加载）。
@@ -85,7 +85,7 @@ Press <kbd>⌘K</kbd> and get a **Spotlight-style session palette** instead of a
 
 **卸载**：DSH「插件」列表里卸载 `dsh-plugin-session-palette` → 重启；或「Restore All」恢复按键默认值。**无需清理任何偏好**——它没写过。
 
-**老实说（实测范围）**：只在 **macOS（Apple Silicon）+ DSH Desktop 0.2.0-rc.2** 上端到端跑过。Windows / Linux 未测；DSH 升级后上游契约可能变化，见下方 Compatibility。
+**老实说（实测范围）**：只在 **macOS（Apple Silicon）+ DSH Desktop 0.2.1-rc.2** 上端到端跑过（0.8.0 的改名、标签、长列表都是在这个版本上验的）。Windows / Linux 未测；DSH 升级后上游契约可能变化，见下方 Compatibility。
 
 </details>
 
@@ -119,7 +119,7 @@ Use DSH's own **Add plugin** dialog. No npm account, no publishing.
 
 | Field | Value |
 |---|---|
-| GitHub | `github:kjx-talesofai/dsh-plugin-session-palette#v0.8.0` |
+| GitHub | `github:kjx-talesofai/dsh-plugin-session-palette#v0.8.1` |
 | Local directory | an absolute path, e.g. `/path/to/dsh-plugin-session-palette` |
 
 Restart the desktop app afterwards: the Host half is only loaded at startup. The browser half reloads with the page.
@@ -211,7 +211,7 @@ The preview comes from the host's `turnOutline` projection, which already carrie
 
 ## Compatibility
 
-Verified against **DSH 0.2.0-rc.2** on macOS (Apple Silicon), in a real profile. The plugin depends on the following upstream contracts, each of which was checked against the shipped bundles rather than assumed:
+Verified against **DSH 0.2.1-rc.2** on macOS (Apple Silicon), in a real profile. The plugin depends on the following upstream contracts, each of which was checked against the shipped bundles rather than assumed:
 
 | Contract | Where it comes from |
 |---|---|
@@ -222,7 +222,7 @@ Verified against **DSH 0.2.0-rc.2** on macOS (Apple Silicon), in a real profile.
 | `sessions.using` → `reference.binding.session.rename`, and the host's "not live in this store" refusal | `dsh-api-session-controller`, `dsh-session-title` |
 | Native interception keyed on exact chord + modifiers, unmatched chords reaching the main frame | `lib/main.js` (`before-input-event`) |
 | `turnOutline` (per-turn prompt/response previews) | `dsh-session-turn-outline` |
-| `retainedBy.mainView` as "the current session" (the header's title span is found by its `crumbCurrent` class suffix) | `dsh-client-ui-workspace`, `dsh-client-ui-conversation` |
+| `retainedBy.mainView` as "the current session" (the header's title span is found by its `crumbCurrent` class suffix — still `<hash>_crumbCurrent` in 0.2.1-rc.2) | `dsh-client-ui-workspace`, `dsh-client-ui-conversation` |
 
 Upstream may change any of these. A failure in the shortcut contract is the one to watch: it is silent rather than loud.
 
