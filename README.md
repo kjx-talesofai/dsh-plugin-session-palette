@@ -4,7 +4,7 @@
 
 # dsh-plugin-session-palette
 
-Press <kbd>⌘K</kbd> and get a **Spotlight-style session palette** instead of a search box in the corner — recent first, running and waiting sessions on top, and a preview of each session's **last turn** before you commit to opening it.
+Press <kbd>⌘K</kbd> and get a **Spotlight-style session palette** instead of a search box in the corner — recent first, running and waiting sessions on top, a preview of each session's **last turn** before you commit to opening it, and <kbd>⌘⇧R</kbd> to **rename the highlighted one in place**.
 
 <p align="center">
   <a href="https://github.com/kjx-talesofai/dsh-plugin-session-palette/releases"><img src="https://img.shields.io/github/v/release/kjx-talesofai/dsh-plugin-session-palette?label=release&style=flat-square&color=blue" alt="release"></a>
@@ -13,7 +13,7 @@ Press <kbd>⌘K</kbd> and get a **Spotlight-style session palette** instead of a
   <img src="https://img.shields.io/badge/DSH-%E2%89%A5%200.2.0--rc.1-blueviolet?style=flat-square" alt="DSH >= 0.2.0-rc.1">
 </p>
 
-> dsh-plugin-session-palette — ⌘K 弹出会话面板：最近优先，正在运行与等待你的置顶，并预览最后一个 turn
+> dsh-plugin-session-palette — ⌘K 弹出会话面板：最近优先，正在运行与等待你的置顶，预览最后一个 turn，⌘⇧R 就地改名
 
 <details>
 <summary><b>中文说明（点开）</b> —— ⌘K 从「聚焦侧边栏搜索框」变成「蹦出一个会话面板」</summary>
@@ -38,7 +38,7 @@ Press <kbd>⌘K</kbd> and get a **Spotlight-style session palette** instead of a
 
 | 填入 | 形式 |
 |---|---|
-| GitHub | `github:kjx-talesofai/dsh-plugin-session-palette#v0.1.0`（当前可用） |
+| GitHub | `github:kjx-talesofai/dsh-plugin-session-palette#v0.2.0`（当前可用） |
 | 本地目录 | 绝对路径，例如 `/path/to/dsh-plugin-session-palette` |
 
 装完**重启桌面端**（host 半边只在启动时加载）。
@@ -51,6 +51,7 @@ Press <kbd>⌘K</kbd> and get a **Spotlight-style session palette** instead of a
 | <kbd>↑</kbd> <kbd>↓</kbd> | 移动高亮（循环），鼠标划过也会移动 |
 | <kbd>Home</kbd> <kbd>End</kbd> | 首 / 末（输入框光标已在两端时） |
 | <kbd>⏎</kbd> | 打开高亮的会话 |
+| <kbd>⌘⇧R</kbd> | 给高亮的会话**改名**（复用上面那个输入框，⏎ 保存 / esc 取消） |
 | <kbd>Tab</kbd> / <kbd>⇧Tab</kbd> | 循环三个视图 |
 | <kbd>⌘⇧P</kbd> | 置顶 / 取消置顶 |
 | <kbd>⌘⇧⌫</kbd> | 归档 / 恢复 |
@@ -59,6 +60,8 @@ Press <kbd>⌘K</kbd> and get a **Spotlight-style session palette** instead of a
 **注意事项**：
 
 - **它会接管 <kbd>⌘K</kbd>**，这是它存在的意义。侧边栏那个搜索按钮**照旧能用**（鼠标点），只是键盘快捷键让给了面板。
+- **改名不是新开一个输入框**：<kbd>⌘⇧R</kbd> 之后，你最上面那个搜索框**原地变成标题编辑框**（列表还按你原来的查询筛着，高亮还停在要改的那一行）。打完 <kbd>⏎</kbd> 保存，<kbd>esc</kbd> 放弃；失败时原因显示在输入框下面一行，草稿不会被吃掉。成功后的提示里带**撤销**。
+- **标题有字节上限**（DSH 默认 80 字节，中文约 26 个字）。超了 host 会截断，面板的提示报的是**实际存下来的标题**，不是你打的草稿。
 - **它一个字都不改你的按键偏好**。接管走的是「固定键位」这条官方通道，只在内存里生效；所以**想关掉就干净地关掉**，没有需要还原的东西。
 - **它不做全文搜索**（还没做）。现在只匹配**会话标题**和工作区名，不匹配消息正文。所以找一个"聊过某个话题"的会话，暂时还得用侧边栏那个搜索。
 - **预览在旧会话上要等一下**：DSH 的 projection 缓存只覆盖约三分之二的会话，其余的是「很久没碰过的那些」。面板在高亮停留约 0.2 秒后才会去读它们（一次一行，不并发），所以快速划过时不会卡。
@@ -99,7 +102,7 @@ Use DSH's own **Add plugin** dialog. No npm account, no publishing.
 
 | Field | Value |
 |---|---|
-| GitHub | `github:kjx-talesofai/dsh-plugin-session-palette#v0.1.0` |
+| GitHub | `github:kjx-talesofai/dsh-plugin-session-palette#v0.2.0` |
 | Local directory | an absolute path, e.g. `/path/to/dsh-plugin-session-palette` |
 
 Restart the desktop app afterwards: the Host half is only loaded at startup. The browser half reloads with the page.
@@ -112,7 +115,20 @@ This plugin is **not published to npm**, and `npm install` is not the install pa
 2. Type to narrow by **title or workspace name** (fuzzy-matched, ordered-subsequence — the same ranker the host's own `/` menu uses).
 3. <kbd>↑</kbd>/<kbd>↓</kbd> or hover to move the highlight; the right-hand pane previews that session's last turn.
 4. <kbd>⏎</kbd> opens it. <kbd>Tab</kbd> switches to the Pinned or Archived drawer.
-5. <kbd>⌘⇧P</kbd> pins, <kbd>⌘⇧⌫</kbd> archives, and both toggle — so the same chord restores.
+5. <kbd>⌘⇧R</kbd> renames the highlighted session right there — the search field becomes the title field, <kbd>⏎</kbd> saves, <kbd>esc</kbd> cancels.
+6. <kbd>⌘⇧P</kbd> pins, <kbd>⌘⇧⌫</kbd> archives, and both toggle — so the same chord restores.
+
+### Renaming
+
+The highlight is already the thing you are about to act on, so a rename edits *that row* and nothing else. <kbd>⌘⇧R</kbd> turns the search field into a title field: same place, same line height, focus never moves, the query stays applied and the highlight stays put. <kbd>⏎</kbd> saves, <kbd>esc</kbd> restores the query, and a rejected write leaves the draft in place with the host's reason on its own line underneath.
+
+Three decisions are worth naming:
+
+- **⌘⇧R, not ⌘R** — `page.refresh` owns <kbd>⌘R</kbd>, and <kbd>⌘⌥G</kbd> is the host's own `session.rename`. Both are chords the Electron main process intercepts before the page ever sees them, so a handler on either would never run and the host would act behind the palette instead. Shift+R is unclaimed by every shipped command, which is a property of the current catalog rather than a promise.
+- **The search field, not a second input** — an input inside a `role="option"` row is invisible to the accessibility tree, and a second text box would have to fight the row's focus handling. One field, two jobs, and its ARIA role changes with the job.
+- **`sessions.using`, not a direct call** — the host refuses to rename a session that is not live in its store, so the write goes through a retained reference (the same path the shipped sidebar uses). The retain is attributed to `sessionPalette` in `retainInfo`, and it lasts for exactly one call.
+
+The bytes you type are not the bytes stored: the host normalizes whitespace and shortens a title past `maxTitleBytes` (80 in the shipped bundle). The toast therefore reports the title the host **accepted**, and Undo is only offered when there was a title to go back to.
 
 ### How it works
 
@@ -136,7 +152,6 @@ The preview comes from the host's `turnOutline` projection, which already carrie
 - **No content search yet.** Matching covers the session title and the workspace name. The message-body search the shipped sidebar performs is not wired in.
 - **No query language yet.** `@workspace`, `is:archived`, `after:7d` and filter chips are designed but not implemented.
 - **No settings UI yet.** The one switch (`takeOver`) lives in your profile's `cordis.patch.yml`:
-
   ```yaml
   - id: session-palette
     name: 'dsh-plugin-session-palette'
@@ -146,6 +161,8 @@ The preview comes from the host's `turnOutline` projection, which already carrie
 
 - **The fixed chord is not user-rebindable.** That is a property of the mechanism, not an oversight; the unbound companion command is the escape hatch.
 - **Archiving a session with running work** is refused by the Host, and the palette reports it as a plain failure rather than offering the shipped stop-and-archive flow.
+- **A rename briefly opens the session.** Renaming requires a retained reference, and retaining starts the session's history open. Rename is an explicit one-shot action, so this is the same cost the shipped sidebar pays for its own row rename — but it is not free on a session you have never opened.
+- **The rename chord is the fixed part, not the title.** <kbd>⌘⇧R</kbd> is a local handler, so it only works while the palette has focus, and it is not rebindable.
 - **No session deletion**, ever — archived sessions are recoverable, which is what the Archived drawer is for.
 
 ## Compatibility
@@ -158,6 +175,8 @@ Verified against **DSH 0.2.0-rc.2** on macOS (Apple Silicon), in a real profile.
 | `registerFixed` / `observeFixedInput`, and fixed bindings being excluded from native interception | `dsh-client-shortcuts` |
 | The dotted command-id pattern (a bad id silently disables **every** keyboard command) | `dsh-client-shortcuts` |
 | `ctx.sessions.list`, `refreshProjections`, `ctx.uiWorkspace`, `ctx.workspaces` | `dsh-api-session-controller`, `dsh-client-ui-workspace`, `dsh-api-workspace-controller` |
+| `sessions.using` → `reference.binding.session.rename`, and the host's "not live in this store" refusal | `dsh-api-session-controller`, `dsh-session-title` |
+| Native interception keyed on exact chord + modifiers, unmatched chords reaching the main frame | `lib/main.js` (`before-input-event`) |
 | `turnOutline` (per-turn prompt/response previews) | `dsh-session-turn-outline` |
 
 Upstream may change any of these. A failure in the shortcut contract is the one to watch: it is silent rather than loud.
@@ -165,7 +184,7 @@ Upstream may change any of these. A failure in the shortcut contract is the one 
 ## Development
 
 ```sh
-npm test          # 56 tests, no install step required
+npm test          # 74 tests, no install step required
 ```
 
 There is deliberately **no build step**: `client.js` is the shipped browser bundle, and the Host half is a single `index.js`.

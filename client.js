@@ -79,6 +79,17 @@ window.__ModuleLoader__.load({
     /** The host's own modal arbitration selector, copied verbatim. */
     const MODAL_SELECTOR = '[role="dialog"][aria-modal="true"], [role="menu"]'
 
+    /**
+     * Retain source for a rename.
+     *
+     * `sessions.retain`/`using` take a `source` key that is used only for
+     * accounting — it becomes one counter in `retainInfo(id).retainedBy`, and the
+     * runtime never validates it (the shipped workspace half passes its own
+     * `workspaceOperation`). Naming this plugin is what makes an unexpected
+     * retain attributable in a diagnostic dump instead of looking like a leak.
+     */
+    const RENAME_SOURCE = 'sessionPalette'
+
     /** Rows rendered before the list is truncated, to keep 1500+ sessions cheap. */
     const ROW_LIMIT = 200
 
@@ -509,7 +520,8 @@ window.__ModuleLoader__.load({
         'preview.loading': 'Loading the last turn…',
         'preview.none': 'No turns recorded yet',
         'preview.unavailable': 'Press ⏎ to read this one',
-        'preview.footer': '↑↓ move · ⏎ open · tab drawer · ⌘⇧P pin · ⌘⇧⌫ archive · esc',
+        'preview.footer':
+          '↑↓ move · ⏎ open · tab drawer · ⌘⇧R rename · ⌘⇧P pin · ⌘⇧⌫ archive · esc',
         'archived.open': 'Archived — restore it first',
         'pin.archived': 'Archived sessions cannot be pinned',
         'archived.done': 'Archived',
@@ -519,6 +531,12 @@ window.__ModuleLoader__.load({
         'pin.done': 'Pinned',
         'unpin.done': 'Unpinned',
         'pin.failed': 'Could not change the pin',
+        'rename.aria': 'Session title',
+        'rename.placeholder': 'Give this session a name',
+        'rename.hint': '⏎ save · esc cancel',
+        'rename.done': 'Renamed to “{title}”',
+        'rename.failed': 'Could not rename: {reason}',
+        'rename.unavailable': 'the session did not respond',
       },
       zh: {
         'palette.aria': '会话面板',
@@ -569,7 +587,8 @@ window.__ModuleLoader__.load({
         'preview.loading': '正在载入最后一个 turn…',
         'preview.none': '还没有 turn',
         'preview.unavailable': '按 ⏎ 进去看',
-        'preview.footer': '↑↓ 移动 · ⏎ 打开 · tab 抽屉 · ⌘⇧P 置顶 · ⌘⇧⌫ 归档 · esc',
+        'preview.footer':
+          '↑↓ 移动 · ⏎ 打开 · tab 抽屉 · ⌘⇧R 改名 · ⌘⇧P 置顶 · ⌘⇧⌫ 归档 · esc',
         'archived.open': '已归档，需先恢复',
         'pin.archived': '归档会话不能置顶',
         'archived.done': '已归档',
@@ -579,6 +598,12 @@ window.__ModuleLoader__.load({
         'pin.done': '已置顶',
         'unpin.done': '已取消置顶',
         'pin.failed': '没能改变置顶状态',
+        'rename.aria': '会话标题',
+        'rename.placeholder': '给这个会话起个名字',
+        'rename.hint': '⏎ 保存 · esc 取消',
+        'rename.done': '已改名为「{title}」',
+        'rename.failed': '改名失败：{reason}',
+        'rename.unavailable': '会话没有响应',
       },
     }
 
@@ -601,6 +626,13 @@ window.__ModuleLoader__.load({
 .dsp-input{flex:1;min-width:0;border:0;outline:0;background:transparent;color:inherit;font-size:15px;line-height:22px}
 .dsp-input::placeholder{color:var(--dsw-alias-label-tertiary)}
 .dsp-keyhint{flex:none;font-size:11px;color:var(--dsw-alias-label-tertiary)}
+/* Rename mode keeps the same field and the same line height, so nothing on the
+   surface moves when ⌘⇧R is pressed; the accent is the whole mode indicator. */
+.dsp-inputrow-renaming{border-bottom-color:var(--dsw-alias-state-business-primary)}
+.dsp-keyhint-renaming{color:var(--dsw-alias-label-secondary)}
+/* A rejected rename keeps the field open, so the reason needs a line of its own:
+   the trailing chip is 11px and would ellipsize the one sentence that matters. */
+.dsp-renameerror{padding:7px 16px;border-bottom:1px solid var(--dsw-alias-border-l2);color:var(--dsw-alias-state-error-primary);font-size:11px;line-height:16px}
 .dsp-views{display:flex;align-items:center;gap:6px;padding:7px 16px;border-bottom:1px solid var(--dsw-alias-border-l2)}
 .dsp-view{padding:2px 10px;border:1px solid transparent;border-radius:999px;background:transparent;color:var(--dsw-alias-label-secondary);font-size:11px;line-height:18px;cursor:pointer}
 .dsp-view:hover{background:var(--dsw-alias-interactive-bg-hover)}
@@ -699,6 +731,20 @@ window.__ModuleLoader__.load({
       const [manualActiveId, setManualActiveId] = React.useState(null)
       const [now, setNow] = React.useState(() => Date.now())
 
+      /**
+       * The open rename editor, or null: `{ id, draft, busy, error }`.
+       *
+       * The editor reuses the search field instead of growing a second input. The
+       * field is already focused and one line tall, so ⌘⇧R changes *what it edits*
+       * without moving focus, resizing the card, or putting a text box inside a
+       * `role="option"` row (an input nested in an option is invisible to the
+       * accessibility tree). The query is kept, not cleared: you rename inside the
+       * filtered list you were already looking at.
+       */
+      const [rename, setRename] = React.useState(null)
+
+      const composingRef = React.useRef(false)
+
       const inputRef = React.useRef(null)
       const cardRef = React.useRef(null)
       const listRef = React.useRef(null)
@@ -713,6 +759,8 @@ window.__ModuleLoader__.load({
         setQuery('')
         setView('recents')
         setManualActiveId(null)
+        // A rename that was open when the palette closed has no target any more.
+        setRename(null)
         // The toast outlives the palette by design, so the previous action's
         // message would otherwise still be sitting there on reopen.
         palette.dismissNotice()
@@ -843,6 +891,10 @@ window.__ModuleLoader__.load({
           const entry = {
             id: String(id),
             title,
+            // The STORED title, not `displayTitle`: an untitled session falls back
+            // to its folder or its id for display, and seeding the editor with that
+            // fallback would quietly turn derived text into user data on save.
+            storedTitle: typeof row.title === 'string' ? row.title : '',
             workspace,
             updatedAt: typeof row.updatedAt === 'number' ? row.updatedAt : 0,
             pendingLabel: pendingKind === undefined ? undefined : pendingKey(pendingKind),
@@ -994,8 +1046,92 @@ window.__ModuleLoader__.load({
         [palette, t],
       )
 
+      /**
+       * The row the editor is renaming.
+       *
+       * Looked up by id rather than taken from the highlight: a rename that is in
+       * flight outlives the render that started it, and the stored title it is
+       * compared against must be the current one.
+       */
+      const renameRow = React.useMemo(
+        () => (rename === null ? null : (model.rows.find((row) => row.id === rename.id) ?? null)),
+        [model.rows, rename],
+      )
+
+      /**
+       * Turn the search field into a title editor for the highlighted row.
+       *
+       * Seeds from the stored title — empty for a session that has never had one,
+       * which the placeholder then explains. The seed is selected on the next
+       * commit so the first keystroke replaces rather than appends.
+       */
+      const startRename = React.useCallback(() => {
+        if (activeRow === null) return
+        setRename({ id: activeRow.id, draft: activeRow.storedTitle, busy: false, error: null })
+      }, [activeRow])
+
+      const cancelRename = React.useCallback(() => {
+        // An in-flight write is not abandoned: it already left, and dropping the
+        // editor would hide a success the user cannot see happen.
+        setRename((current) => (current === null || current.busy ? current : null))
+      }, [])
+
+      const commitRename = React.useCallback(() => {
+        if (rename === null || rename.busy) return
+        const draft = rename.draft.trim()
+        // The host normalizes and then refuses a title with no visible characters
+        // ("must contain visible characters"), so an empty draft is not a request
+        // worth retaining the session for.
+        if (draft === '') return
+        const previous = renameRow === null ? '' : renameRow.storedTitle
+        // Nothing to write. Closing is the honest outcome, and it costs no retain.
+        if (draft === previous.trim()) {
+          cancelRename()
+          return
+        }
+        setRename((current) =>
+          current === null ? current : { ...current, busy: true, error: null },
+        )
+        palette.rename(rename.id, draft, previous).then(
+          () => setRename(null),
+          (error) => {
+            setRename((current) =>
+              current === null
+                ? current
+                : {
+                    ...current,
+                    busy: false,
+                    error: error instanceof Error ? error.message : String(error),
+                  },
+            )
+          },
+        )
+      }, [rename, renameRow, palette, cancelRename])
+
       const onKeyDown = React.useCallback(
         (event) => {
+          if (rename !== null) {
+            // The editor owns the field while it is open. Tab, the arrows, Home
+            // and End are text editing again, and the list must not move under
+            // the row being renamed.
+            if (event.key === 'Enter') {
+              event.preventDefault()
+              // An IME candidate is confirmed with Enter; committing there would
+              // save half a word. `nativeEvent` is absent in the test harness, so
+              // the composition ref is the load-bearing half.
+              if (!composingRef.current && event.nativeEvent?.isComposing !== true) commitRename()
+              return
+            }
+            if (event.key === 'Escape') {
+              // Both halves: the document-level Escape arbiter returns early on a
+              // prevented event, and stopping the bubble keeps it from reaching
+              // that listener at all.
+              event.preventDefault()
+              event.stopPropagation()
+              cancelRename()
+            }
+            return
+          }
           if (event.key === 'Tab') {
             // Tab is genuinely free here: Enter is the only "open" gesture, so
             // accepting on Tab — the convention in the host's own `/` menu, where
@@ -1075,10 +1211,45 @@ window.__ModuleLoader__.load({
               if (activeRow.archived) palette.notify(t('pin.archived'))
               else palette.togglePin(activeRow.id, activeRow.pinned)
             }
+            return
+          }
+          if (
+            // ⌘⇧R, not ⌘R: `page.refresh` owns ⌘R (and owns it natively — Electron
+            // intercepts the chord before the page sees it), and not ⌘⌥G, which is
+            // the host's own `session.rename` with the same fate. R for rename,
+            // shift as its variant; no shipped command claims the combination.
+            (event.key === 'r' || event.key === 'R') &&
+            event.shiftKey &&
+            (event.metaKey || event.ctrlKey) &&
+            !event.altKey
+          ) {
+            event.preventDefault()
+            startRename()
           }
         },
-        [move, model, activate, activeRow, archivedIds, palette, pickView, view],
+        [
+          move,
+          model,
+          activate,
+          activeRow,
+          archivedIds,
+          palette,
+          pickView,
+          view,
+          rename,
+          commitRename,
+          cancelRename,
+          startRename,
+        ],
       )
+
+      // Seed the editor selected, so the first keystroke replaces the old title
+      // instead of appending to it. Keyed on the target, not on the draft.
+      const renameTargetId = rename === null ? null : rename.id
+      React.useEffect(() => {
+        if (renameTargetId === null) return
+        inputRef.current?.select?.()
+      }, [renameTargetId])
 
       // The outline, and the reason the dwell timer exists: projections cover
       // roughly two thirds of the list, and the missing third is the old sessions
@@ -1286,25 +1457,64 @@ window.__ModuleLoader__.load({
           },
           h(
             'div',
-            { className: 'dsp-inputrow' },
+            {
+              className: rename === null ? 'dsp-inputrow' : 'dsp-inputrow dsp-inputrow-renaming',
+            },
             h('input', {
               ref: inputRef,
               className: 'dsp-input',
               type: 'text',
-              role: 'combobox',
-              'aria-expanded': 'true',
-              'aria-controls': 'dsp-listbox',
-              'aria-activedescendant':
-                activeId === null ? undefined : `dsp-opt-${domSafe(activeId)}`,
-              'aria-autocomplete': 'list',
-              placeholder: t('palette.placeholder'),
-              value: query,
+              // While renaming this is a plain text box. Publishing it as a
+              // combobox would promise a listbox the arrow keys no longer drive.
+              role: rename === null ? 'combobox' : 'textbox',
+              'aria-label': rename === null ? undefined : t('rename.aria'),
+              ...(rename === null
+                ? {
+                    'aria-expanded': 'true',
+                    'aria-controls': 'dsp-listbox',
+                    'aria-activedescendant':
+                      activeId === null ? undefined : `dsp-opt-${domSafe(activeId)}`,
+                    'aria-autocomplete': 'list',
+                  }
+                : rename.busy
+                  ? { 'aria-busy': 'true' }
+                  : {}),
+              // Not `disabled`: a disabled field loses focus, and the editor has to
+              // stay focused through an in-flight write.
+              readOnly: rename !== null && rename.busy,
+              placeholder: rename === null ? t('palette.placeholder') : t('rename.placeholder'),
+              value: rename === null ? query : rename.draft,
               spellCheck: false,
               autoComplete: 'off',
-              onChange: (event) => setQuery(event.target.value),
+              onChange: (event) => {
+                const value = event.target.value
+                if (rename === null) setQuery(value)
+                // Typing clears the last failure: the message describes the draft
+                // that was submitted, not the one being typed.
+                else
+                  setRename((current) =>
+                    current === null ? current : { ...current, draft: value, error: null },
+                  )
+              },
+              onCompositionStart: () => {
+                composingRef.current = true
+              },
+              onCompositionEnd: () => {
+                composingRef.current = false
+              },
             }),
-            h('span', { className: 'dsp-keyhint' }, state.hotkeyLabel ?? ''),
+            h(
+              'span',
+              { className: rename === null ? 'dsp-keyhint' : 'dsp-keyhint dsp-keyhint-renaming' },
+              rename === null ? (state.hotkeyLabel ?? '') : t('rename.hint'),
+            ),
           ),
+          // A rejected write leaves the field in rename mode with its draft intact,
+          // so the reason gets its own line: retyping and pressing Enter again is
+          // the whole recovery path.
+          rename !== null && rename.error !== null
+            ? h('div', { className: 'dsp-renameerror', role: 'alert' }, rename.error)
+            : null,
           // A visible switch, not just a hidden Tab binding: the count is the
           // reminder that the drawer has something in it, and a mouse user can
           // reach the drawer without learning the chord.
@@ -1596,6 +1806,60 @@ window.__ModuleLoader__.load({
       }
 
       /**
+       * Rename one session through a retained reference.
+       *
+       * `using` is not a convenience here, it is the contract. The host's rename
+       * refuses a session that is not live in its store ("session ... is not live
+       * in this store"), and retaining is what makes one live; it is also exactly
+       * what the shipped sidebar does for its own row rename, and for any row
+       * rather than only the open one. The retain lasts for one call: `using`
+       * releases in a `finally`, so the retention count returns to where it was.
+       *
+       * @param id - session to rename.
+       * @param title - trimmed draft; the host normalizes it and may shorten it to
+       *   its byte budget, so the accepted value is not necessarily this string.
+       * @param previous - title to offer as Undo, or '' to offer none.
+       * @returns the title the host actually accepted.
+       */
+      const renameSession = (id, title, previous) => {
+        let call
+        try {
+          call = ctx.sessions.using(id, { source: RENAME_SOURCE }, (reference) =>
+            reference.binding.session.rename(title),
+          )
+        } catch (error) {
+          // `using` is async in the shipped client, so this only fires if the
+          // facade changes shape. Reject rather than throw: the caller is a
+          // keydown handler, and a synchronous throw there kills the event.
+          const reason = error instanceof Error ? error.message : String(error)
+          return Promise.reject(new Error(t('rename.failed', { reason })))
+        }
+        return Promise.resolve(call).then((result) => {
+          if (result === undefined || result === null || result.ok !== true) {
+            const reason = result?.error?.message ?? t('rename.unavailable')
+            throw new Error(t('rename.failed', { reason }))
+          }
+          const accepted = result.value.title
+          // Report the title the HOST stored, not the draft: it collapses
+          // whitespace and truncates past `maxTitleBytes`, and the toast is the
+          // only place that difference becomes visible.
+          notify(
+            t('rename.done', { title: accepted }),
+            typeof previous === 'string' && previous.trim() !== ''
+              ? () => {
+                  // Undo is the same path, so the restored title goes through the
+                  // same normalization — and Undo has no Undo of its own.
+                  renameSession(id, previous, '').catch((error) =>
+                    notify(error instanceof Error ? error.message : String(error)),
+                  )
+                }
+              : undefined,
+          )
+          return accepted
+        })
+      }
+
+      /**
        * Ask the client to load one session's projections, after a dwell.
        *
        * Cold reads hit the session log and the host's projection LRU holds only
@@ -1798,6 +2062,7 @@ window.__ModuleLoader__.load({
         openSession,
         archiveRow,
         togglePin,
+        rename: renameSession,
         dismissNotice,
         ensureProjections,
         cancelProjections,

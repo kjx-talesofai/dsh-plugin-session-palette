@@ -805,3 +805,63 @@ sessionListMetadata(1015)  imageLimits(1015)  messageModel(26)
 
 复现：`plugin_manager install_bundle` 指向 `probe/` 的绝对路径 → 刷新页面 → 点「Claim ⌘K」→ 按 ⌘K
 → 卸载。**它默认不占用任何快捷键**，只有点了那个按钮才占。
+
+---
+
+## 11. v0.2.0：改名（2026-10-18）
+
+目标：**⌘K 高亮一个会话之后，就地给它改名**，不新开一层界面。
+
+### 11.1 上游到底怎么改名（核对过，不是猜的）
+
+| 结论 | 证据 |
+| --- | --- |
+| 写入口是**保留引用上的** `rename`，不是服务上的 | `Client Service` 契约：`sessions.using(target, options, op)` → `op(reference)`，`reference.binding.session.rename(title) → RemoteResult<{title, seq}>` |
+| 不能直接调 | Host 侧 `SessionTitleService.rename()` 第一句就是 `if (this.ctx.sessions.get(session.id) !== session) throw new Error('session ... is not live in this store')`（`dsh-session-title/lib/index.js`）；`retain`/`using` 的 `open()` 才是让它 live 的那一步 |
+| 官方 UI 就是这么做的 | `dsh-client-ui-workspace/lib/client.js:5077`：`sessions.using(sessionId, { source: "workspaceOperation" }, (reference) => reference.binding.session.rename(title))` |
+| `source` **不被校验** | `retainScope(id, source)` 只做计数（`retainedBy[source] = (retainedBy[source] ?? 0) + 1`）；类型联合写的是 `controllerOperation | gateway`，而官方自己传了 `workspaceOperation` —— 声明比运行时窄。本插件传 `sessionPalette`，好让 `retainInfo` 里那笔账认得出来是谁 |
+| 标题会被**规范化 + 截断** | `normalizeSessionTitle` = 去控制字符、`\s+` 折叠、`trim`、再按 `maxTitleBytes` 截断；`dsh-base` 的 shipped 值 **80 字节**（≈26 个汉字）。空标题抛 `SessionTitleInvalidError('session title must contain visible characters')` |
+| 成功即可见 | `ISession.rename` 成功后 `projections.apply('title', …)`，列表行不用等 push 帧 |
+
+### 11.2 交互：为什么复用搜索框，而不是新开一个输入框
+
+候选与淘汰理由：
+
+1. **行内编辑**（`role="option"` 里塞 `<input>`）—— ARIA 里 `option` 的子节点是呈现性的，输入框会从无障碍树里消失；还要和行本身的 `onMouseDown: preventDefault`（保焦点）、`onClick: activate`（会顺手打开会话）打架。
+2. **右栏预览标题就地编辑** —— 没有 ARIA 问题，但"在另一个窗格里改这一行的名字"，视线和对象分家了。
+3. **✅ 复用顶部搜索框** —— 焦点不动、行高不变、不新增 ARIA 角色冲突；`role` 从 `combobox` 换成 `textbox`（因为它不再驱动列表），`aria-label` 换成"会话标题"。**查询保留**（列表还按原查询筛），高亮保留（所以"在改哪一行"一直是可见的）。
+
+配套的几个"沉默点"是故意写死在这一版里的：
+
+- **种子取 `title`（存储值），不取 `displayTitle`**。未命名会话的 `displayTitle` 会退化成目录名或 id；拿它当种子，用户按一次 ⏎ 就**把派生文本写成了用户数据**。所以行模型里专门带了 `storedTitle`。
+- **空草稿不发请求**（host 反正会拒），**与原标题相同则直接退出**（一次 retain 都不花）。
+- **IME**：`compositionstart/end` 期间 ⏎ 属于候选词确认，不提交。
+- **失败留在原地**：草稿不清、焦点不丢，原因单独一行（`role="alert"`）；提示条里**报 host 实际存下的标题**，而不是草稿 —— 截断/折叠只有在这里才看得见。
+- **撤销**：只有原标题非空时才给，否则撤销等于提交空标题。
+
+### 11.3 键位：为什么是 ⌘⇧R
+
+`:disable` 结论全部来自 `lib/main.js` 的 `before-input-event`：
+
+```js
+const key = bindingKey({ code: input.code, modifiers })   // code + 精确修饰键集合
+const match = keys.has(key)                                // keys = 命令目录的 desktop:macos 默认键位
+if (!priority && (main || !match)) return                  // ← 主框架：不匹配 ⇒ 不 preventDefault ⇒ 页面看得见
+```
+
+即：**只有命令目录里登记过的组合会被原生吃掉**，其余原样到达 DOM。
+
+| 组合 | 结果 |
+| --- | --- |
+| `⌘R` | ❌ `page.refresh`（`KeyR` + `primary`，`regions` 含 `editable`） |
+| `⌘⌥G` | ❌ host 自己的 `session.rename`（`KeyG` + `primary,alt`） |
+| `⌘⇧R` | ✅ 全目录无人占用 → 页面能收到 |
+| `⌘⇧⌫` | 已被归档占用（Backspace 是保留键，命令永远拿不到，所以结构上安全） |
+
+已核对的全量键位（`desktop:macos` 默认值）：`⌘B`、`⌘⌥B`、`⌘T`、`⌘P`、`⌘O`、`⌘⌥O`、`⌘,`、`⌘/`、`⌃\``、`⌘\`、`⌘⌥⏎`、`⌘W`、`⌘R`、`⌘⇧.`、`⌘N`、`⌘K`、`⌘⌥G`、`⌘⌥F`、`⌘⇧A`。**这是当前目录的性质，不是承诺**：将来若有人登记 `⌘⇧R`，它会被原生拦走，`rename` 静默失效 —— 这正是 `probe/` 值得留着的原因。
+
+### 11.4 这一版没做的
+
+- **归档会话也能改名**（没加拦截）：改名是元数据操作，不是打开；真被 host 拒了，错误会原样显示在输入框下面。
+- **没做字节计数器**：提示条报"实际存下的标题"已经足够诚实，再加一行实时计数属于为 80 字节这一个数字付界面成本。
+- **端到端手指验证仍是用户的**：本机沙箱里没有浏览器/ Electron 输入通道，⌘⇧R 真正到手、`rename` 真正落盘，靠的是"静态核对 + 74 条测试 + 你按一次"。

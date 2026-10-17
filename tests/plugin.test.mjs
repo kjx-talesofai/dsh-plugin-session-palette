@@ -32,6 +32,14 @@
  *     elapsed-time thresholds, activity tier ordering, folder labels, workspace
  *     title resolution, the fuzzy matcher's subsequence/prefix precedence, the
  *     store's publish suppression, and the projection dwell's single-flight.
+ *   - rename behaves as a second mode of the search field: ⌘⇧R seeds the draft
+ *     from the STORED title (never the folder/id fallback), the input's role
+ *     flips to `textbox`, Enter writes through `sessions.using` with this
+ *     plugin's retain source, an unchanged or blank draft never leaves the page,
+ *     a rejection keeps the draft and shows the host's reason, Escape cancels
+ *     without a request, IME composition owns Enter, the arrows stay the text
+ *     field's, and the toast reports the accepted title with an Undo only when
+ *     there was a title to go back to.
  *
  *   NOT proven here
  *   - anything the real harness owns: `ui-slots`/`ui-renderer` prop composition,
@@ -40,9 +48,10 @@
  *     native interception. Those are stubbed. The rendered pixels, the real ⌘K
  *     delivery on macOS, and the actual `turnOutline` coverage were verified
  *     against the running app by hand instead — see docs/plan.md §10.
- *   - the React component tree: the suite calls `apply` and reads the inject face
- *     it registers, but never renders. Row layout, focus behaviour and styling
- *     remain browser-verified only.
+ *   - the real DOM. The component IS rendered here, through a hooks runtime that
+ *     settles effects and re-renders on state change, but focus, text selection,
+ *     layout, and whether ⌘⇧R actually reaches the page remain browser-verified —
+ *     see docs/plan.md §11.4.
  *
  * Run with `npm test`.
  */
@@ -242,6 +251,10 @@ function sessionsOf(rows) {
     ids.push(row.id)
     byId[row.id] = {
       displayTitle: row.title ?? row.id,
+      // The STORED title is a separate field from the displayed one: the palette
+      // seeds its editor from this, and an untitled session must have no stored
+      // title even though it still displays something.
+      ...(row.title === undefined ? {} : { title: row.title }),
       updatedAt: row.updatedAt ?? 1_000,
       blank: row.blank ?? false,
       origin: row.origin,
@@ -381,6 +394,7 @@ function makeCtx(options = {}) {
     pin: [],
     unpin: [],
     refresh: [],
+    renames: [],
   }
 
   const pinnedSessionIds = options.pinnedSessionIds ?? []
@@ -391,6 +405,29 @@ function makeCtx(options = {}) {
       refreshProjections(id) {
         record.refresh.push(id)
         return Promise.resolve()
+      },
+      // The shape the plugin is allowed to assume: `using` retains, runs the
+      // callback, and releases. The rename itself is reached through the retained
+      // reference's binding, never through the service directly — a stub that
+      // exposed `rename` on the service would let a wrong call site pass.
+      using(target, retain, operation) {
+        const reference = {
+          sessionId: target,
+          binding: {
+            session: {
+              rename: (title) => {
+                record.renames.push({ id: target, source: retain?.source, title })
+                const outcome = options.renameResult
+                return Promise.resolve(
+                  typeof outcome === 'function'
+                    ? outcome(title)
+                    : (outcome ?? { ok: true, value: { title, seq: 1 } }),
+                )
+              },
+            },
+          },
+        }
+        return Promise.resolve(operation(reference))
       },
     },
     workspaces: {
@@ -472,7 +509,10 @@ function makeCtx(options = {}) {
         record.localeRegistrations.push({ ns, dicts })
         return () => {}
       },
-      bind: () => (key) => key,
+      // Params are rendered, not dropped: a notice that names the title it stored
+      // is a claim worth being able to read back in an assertion.
+      bind: () => (key, params) =>
+        params === undefined ? key : `${key}(${JSON.stringify(params)})`,
     },
     configForms: {
       get: () => ({
@@ -1255,8 +1295,12 @@ function press(key, modifiers = {}) {
     target: null,
     repeat: false,
     defaultPrevented: false,
+    propagationStopped: false,
     preventDefault() {
       this.defaultPrevented = true
+    },
+    stopPropagation() {
+      this.propagationStopped = true
     },
     ...modifiers,
   }
@@ -1474,6 +1518,294 @@ test('reopening does not greet you with the last action\'s message', () => {
   ui.palette.store.update((state) => ({ ...state, open: true, epoch: 2 }))
   ui.render()
   assert.equal(ui.palette.store.getSnapshot().notice, null, 'no stale toast on reopen')
+})
+
+//#endregion
+
+//#region rename
+//
+// `⌘⇧R` reuses the search field as a title editor. These tests cover the part
+// the browser cannot be trusted to prove on its own: what the field claims to be
+// (combobox vs textbox), which draft is sent, through which service, and what
+// happens when the host refuses.
+
+/** Open the palette over `rows` and press the rename chord. */
+function startRenameUi(rows, ctx = {}) {
+  const made = paletteUi({ sessions: sessionsOf(rows), ctx })
+  const chord = press('r', { shiftKey: true, metaKey: true })
+  made.ui.find('dsp-card').props.onKeyDown(chord)
+  return { ...made, chord }
+}
+
+/** The ids of the rows currently published as selected. */
+const selectedIds = (ui) =>
+  ui
+    .all('dsp-row')
+    .filter((node) => node.props['aria-selected'] === 'true')
+    .map((node) => String(node.props.id).replace(/^dsp-opt-/, ''))
+
+test('⌘⇧R turns the search field into a title editor, without adding a field', () => {
+  const { ui, chord } = startRenameUi([
+    { id: 'a', title: 'Old name' },
+    { id: 'b', title: 'Other' },
+  ])
+
+  assert.equal(chord.defaultPrevented, true, 'the chord is claimed from the browser')
+  // The design decision, asserted: one input, two jobs. A second text box would
+  // have to fight the row's focus handling and hide itself from the a11y tree.
+  assert.equal(ui.all('dsp-input').length, 1)
+
+  const field = ui.find('dsp-input')
+  assert.equal(field.props.role, 'textbox', 'no longer a combobox: the list is not driven')
+  assert.equal(field.props['aria-expanded'], undefined, 'and claims no expanded list')
+  assert.equal(field.props['aria-activedescendant'], undefined)
+  assert.equal(field.props.value, 'Old name', 'seeded with the title being renamed')
+  assert.equal(field.props.placeholder, 'rename.placeholder')
+  assert.equal(field.props['aria-label'], 'rename.aria')
+
+  const hint = ui.find('dsp-keyhint')
+  assert.deepEqual(hint.children, ['rename.hint'], 'the trailing chip teaches the two keys')
+  assert.match(ui.find('dsp-inputrow').props.className, /dsp-inputrow-renaming/)
+  assert.deepEqual(selectedIds(ui), ['a'], 'the highlight still says which row this is')
+})
+
+test('an untitled session seeds an empty draft, not its folder fallback', () => {
+  // A raw snapshot, because `sessionsOf` derives `displayTitle` from the id. Here
+  // the displayed title is the folder, which is exactly the fallback that must
+  // not become the draft.
+  const made = paletteUi({
+    sessions: {
+      ids: ['a'],
+      byId: {
+        a: {
+          displayTitle: 'project',
+          updatedAt: 1_000,
+          blank: false,
+          running: false,
+          cwd: '/Users/me/project',
+        },
+      },
+      phase: 'ready',
+      projectionsBySession: {},
+    },
+  })
+  made.ui.find('dsp-card').props.onKeyDown(press('r', { shiftKey: true, metaKey: true }))
+
+  // Seeding that fallback would turn derived text into user data the moment the
+  // user pressed Enter unchanged.
+  assert.equal(made.ui.find('dsp-rowtitle').children[0], 'project')
+  assert.equal(made.ui.find('dsp-input').props.value, '')
+})
+
+test('Enter renames through sessions.using and reports what the host stored', async () => {
+  const { ui, record } = startRenameUi([{ id: 'a', title: 'Old name' }])
+  ui.find('dsp-input').props.onChange({ target: { value: '  New name  ' } })
+  ui.find('dsp-card').props.onKeyDown(press('Enter'))
+  await Promise.resolve()
+  await Promise.resolve()
+
+  assert.deepEqual(record.renames, [
+    { id: 'a', source: 'sessionPalette', title: 'New name' },
+  ])
+  // The draft is trimmed here; the retain is attributed to this plugin so a
+  // diagnostic dump can tell it from the host's own retains.
+  assert.match(ui.palette.store.getSnapshot().notice.text, /rename\.done/)
+  assert.equal(ui.find('dsp-input').props.role, 'combobox', 'the field is a search box again')
+  assert.equal(ui.find('dsp-input').props.value, '', 'and shows the query it interrupted')
+})
+
+test('the toast reports the accepted title, not the draft', async () => {
+  // The host shortens a title past its byte budget. Showing the draft would claim
+  // a rename that did not happen.
+  const { ui } = startRenameUi([{ id: 'a', title: 'Old' }], {
+    renameResult: (title) => ({ ok: true, value: { title: `${title}…`, seq: 2 } }),
+  })
+  ui.find('dsp-input').props.onChange({ target: { value: 'A very long title' } })
+  ui.find('dsp-card').props.onKeyDown(press('Enter'))
+  await Promise.resolve()
+  await Promise.resolve()
+
+  assert.match(
+    ui.palette.store.getSnapshot().notice.text,
+    /A very long title…/,
+    'the host answer is what the user is told',
+  )
+})
+
+test('a rejected rename keeps the draft and shows the reason', async () => {
+  const { ui, record } = startRenameUi([{ id: 'a', title: 'Old' }], {
+    renameResult: () => ({ ok: false, error: { message: 'session/title-invalid' } }),
+  })
+  ui.find('dsp-input').props.onChange({ target: { value: 'Nope' } })
+  ui.find('dsp-card').props.onKeyDown(press('Enter'))
+  await Promise.resolve()
+  await Promise.resolve()
+
+  assert.equal(record.renames.length, 1, 'the attempt reached the host')
+  const field = ui.find('dsp-input')
+  assert.equal(field.props.role, 'textbox', 'the editor stays open')
+  assert.equal(field.props.value, 'Nope', 'with the draft intact, ready for a retry')
+  const error = ui.find('dsp-renameerror')
+  assert.equal(error.props.role, 'alert', 'and the reason is announced')
+  assert.match(error.children[0], /rename\.failed/)
+  assert.match(error.children[0], /session\/title-invalid/)
+
+  // Typing again clears the stale reason: it described the previous draft.
+  ui.find('dsp-input').props.onChange({ target: { value: 'Nope2' } })
+  assert.equal(ui.find('dsp-renameerror'), null)
+})
+
+test('a failed retain is reported instead of swallowing the click', async () => {
+  const { ui } = startRenameUi([{ id: 'a', title: 'Old' }], {
+    renameResult: () => {
+      throw new Error('Session Controller is disposed')
+    },
+  })
+  ui.find('dsp-input').props.onChange({ target: { value: 'New' } })
+  ui.find('dsp-card').props.onKeyDown(press('Enter'))
+  await Promise.resolve()
+  await Promise.resolve()
+
+  // A throw from `using` is a rejected promise, so it lands on the same path.
+  assert.match(ui.find('dsp-renameerror').children[0], /rename\.failed/)
+})
+
+test('Escape abandons the draft without a request and keeps the palette open', () => {
+  const { ui, record } = startRenameUi([{ id: 'a', title: 'Old' }])
+  ui.find('dsp-input').props.onChange({ target: { value: 'Discard me' } })
+  const escape = press('Escape')
+  ui.find('dsp-card').props.onKeyDown(escape)
+
+  assert.equal(escape.defaultPrevented, true, 'the document Escape arbiter must stand down')
+  assert.equal(escape.propagationStopped, true)
+  assert.deepEqual(record.renames, [])
+  assert.equal(ui.palette.store.getSnapshot().open, true, 'the palette itself stays up')
+  assert.equal(ui.find('dsp-input').props.role, 'combobox')
+})
+
+test('an empty or unchanged draft never reaches the host', () => {
+  const { ui, record } = startRenameUi([{ id: 'a', title: 'Same' }])
+
+  ui.find('dsp-card').props.onKeyDown(press('Enter'))
+  assert.deepEqual(record.renames, [], 'an unchanged title is not a write')
+  assert.equal(ui.find('dsp-input').props.role, 'combobox', 'and the editor closes')
+
+  ui.find('dsp-card').props.onKeyDown(press('r', { shiftKey: true, metaKey: true }))
+  ui.find('dsp-input').props.onChange({ target: { value: '   ' } })
+  ui.find('dsp-card').props.onKeyDown(press('Enter'))
+  assert.deepEqual(record.renames, [], 'the host rejects an empty title; do not ask it to')
+  assert.equal(ui.find('dsp-input').props.role, 'textbox', 'the editor stays open')
+})
+
+test('an IME candidate owns Enter, and saving resumes after composition', () => {
+  const { ui, record } = startRenameUi([{ id: 'a', title: 'Old' }])
+  ui.find('dsp-input').props.onChange({ target: { value: '新名字' } })
+  ui.find('dsp-input').props.onCompositionStart()
+  ui.find('dsp-card').props.onKeyDown(press('Enter'))
+  assert.deepEqual(record.renames, [], 'committing mid-composition would save half a word')
+
+  ui.find('dsp-input').props.onCompositionEnd()
+  ui.find('dsp-card').props.onKeyDown(press('Enter'))
+  assert.equal(record.renames.length, 1, 'and Enter saves once composition ends')
+  assert.equal(record.renames[0].title, '新名字')
+})
+
+test('while editing, the arrows and Tab belong to the text field again', () => {
+  const { ui } = startRenameUi([{ id: 'a', title: 'A' }, { id: 'b', title: 'B' }])
+  assert.deepEqual(selectedIds(ui), ['a'])
+
+  const down = press('ArrowDown')
+  ui.find('dsp-card').props.onKeyDown(down)
+  assert.equal(down.defaultPrevented, false, 'the caret keeps the arrow')
+  assert.deepEqual(selectedIds(ui), ['a'], 'the list does not move under the editor')
+
+  const tab = press('Tab')
+  ui.find('dsp-card').props.onKeyDown(tab)
+  assert.equal(tab.defaultPrevented, false, 'and Tab is not stolen by the view ring')
+  assert.deepEqual(selectedIds(ui), ['a'])
+})
+
+test('a rename that is in flight ignores Enter and Escape until it settles', async () => {
+  let release
+  const { ui, record } = startRenameUi([{ id: 'a', title: 'Old' }], {
+    renameResult: () => new Promise((resolve) => {
+      release = () => resolve({ ok: true, value: { title: 'New', seq: 3 } })
+    }),
+  })
+  ui.find('dsp-input').props.onChange({ target: { value: 'New' } })
+  ui.find('dsp-card').props.onKeyDown(press('Enter'))
+  await Promise.resolve()
+
+  assert.equal(ui.find('dsp-input').props.readOnly, true, 'the draft is frozen, not disabled')
+  assert.equal(ui.find('dsp-input').props['aria-busy'], 'true')
+
+  ui.find('dsp-card').props.onKeyDown(press('Enter'))
+  ui.find('dsp-card').props.onKeyDown(press('Escape'))
+  assert.equal(record.renames.length, 1, 'one request, and Escape did not abandon it')
+
+  release()
+  await Promise.resolve()
+  await Promise.resolve()
+  assert.equal(ui.find('dsp-input').props.role, 'combobox', 'and the editor closes on success')
+})
+
+test('a rename offers Undo, which renames back through the same path', async () => {
+  const { ui, record } = startRenameUi([{ id: 'a', title: 'Old' }])
+  ui.find('dsp-input').props.onChange({ target: { value: 'New' } })
+  ui.find('dsp-card').props.onKeyDown(press('Enter'))
+  await Promise.resolve()
+  await Promise.resolve()
+
+  const notice = ui.palette.store.getSnapshot().notice
+  assert.ok(typeof notice.undo === 'function', 'a rename is reversible')
+
+  notice.undo()
+  await Promise.resolve()
+  await Promise.resolve()
+  assert.deepEqual(record.renames[1], {
+    id: 'a',
+    source: 'sessionPalette',
+    title: 'Old',
+  })
+  assert.match(ui.palette.store.getSnapshot().notice.text, /rename\.done/)
+})
+
+test('an untitled session gets no Undo that would blank its title', async () => {
+  const { ui } = startRenameUi([{ id: 'a', cwd: '/Users/me/project' }])
+  ui.find('dsp-input').props.onChange({ target: { value: 'Named' } })
+  ui.find('dsp-card').props.onKeyDown(press('Enter'))
+  await Promise.resolve()
+  await Promise.resolve()
+
+  // Undo would submit '', which the host refuses: offering it would promise a
+  // restore that cannot happen.
+  assert.equal(ui.palette.store.getSnapshot().notice.undo, undefined)
+})
+
+test('reopening the palette does not resume an abandoned rename', () => {
+  const { ui } = startRenameUi([{ id: 'a', title: 'A' }])
+  ui.palette.close()
+  ui.render()
+  ui.palette.store.update((state) => ({ ...state, open: true, epoch: 2 }))
+  assert.equal(ui.find('dsp-input').props.role, 'combobox')
+})
+
+test('the rename chord leaves the host its own chords', () => {
+  const { ui } = paletteUi({ sessions: sessionsOf([{ id: 'a', title: 'A' }]) })
+
+  // ⌘R is `page.refresh` and ⌘⌥G is `session.rename`: both are intercepted
+  // natively before the page sees them, so claiming either would mean the
+  // handler never runs and the host acts behind the palette instead.
+  for (const chord of [press('r', { metaKey: true }), press('g', { metaKey: true, altKey: true })]) {
+    ui.find('dsp-card').props.onKeyDown(chord)
+    assert.equal(chord.defaultPrevented, false, `${chord.key} stays the host's`)
+  }
+  assert.equal(ui.find('dsp-input').props.role, 'combobox', 'no editor opened')
+
+  // And with nothing highlighted the chord is a no-op rather than a crash.
+  const empty = paletteUi({ sessions: sessionsOf([]) })
+  empty.ui.find('dsp-card').props.onKeyDown(press('r', { shiftKey: true, metaKey: true }))
+  assert.equal(empty.ui.find('dsp-input').props.role, 'combobox')
 })
 
 //#endregion
