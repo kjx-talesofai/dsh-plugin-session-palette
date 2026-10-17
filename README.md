@@ -38,7 +38,7 @@ Press <kbd>⌘K</kbd> and get a **Spotlight-style session palette** instead of a
 
 | 填入 | 形式 |
 |---|---|
-| GitHub | `github:kjx-talesofai/dsh-plugin-session-palette#v0.4.0`（当前可用） |
+| GitHub | `github:kjx-talesofai/dsh-plugin-session-palette#v0.5.0`（当前可用） |
 | 本地目录 | 绝对路径，例如 `/path/to/dsh-plugin-session-palette` |
 
 装完**重启桌面端**（host 半边只在启动时加载）。
@@ -65,6 +65,9 @@ Press <kbd>⌘K</kbd> and get a **Spotlight-style session palette** instead of a
 - **改名不是新开一个输入框**：<kbd>⌘⇧R</kbd> 之后，你最上面那个搜索框**原地变成标题编辑框**（列表还按你原来的查询筛着，高亮还停在要改的那一行）。打完 <kbd>⏎</kbd> 保存，<kbd>esc</kbd> 放弃；失败时原因显示在输入框下面一行，草稿不会被吃掉。成功后的提示里带**撤销**。
 - **标签存在插件的 Config 里**（volatile 字段），写在 profile 的 `cordis.patch.yml`，重启后还在。**每个会话最多 3 个**；标签是「文字 + 可选 emoji + 颜色」，颜色只用主题 token，所以亮/暗色都跟着走。
 - **点标签就是筛选**：面板里那排标签（只列真正用上的）点一下筛，再点一下取消，多个标签是「任一命中」。预览窗格里会话自己的标签也是同一个控件。
+- **行里的标签跟在标题后面**（`标题 🔥🧪`），因为扫列表时眼睛停在标题上，不是停在右边缘。
+- **进入改名/打标签模式后列表是锁的**：模式条会写明在动哪一行、以及列表已锁；鼠标划过、点击都不会换目标，所以你看到的和要改的始终是同一行。想改另一行就 <kbd>esc</kbd> 退出再来。
+- **打标签时右栏会列出这个会话现有的标签**（只读 chip，不是按钮）——选标签不该把已经有的藏起来。
 - **标签需要一次 DSH 重启才生效**：存储字段是本版新加的 host 字段，而 host 半边只在启动时读。没重启之前，选择器会直接说「标签需要重启一次 DSH」，不会假装保存成功。
 - **标题有字节上限**（DSH 默认 80 字节，中文约 26 个字）。超了 host 会截断，面板的提示报的是**实际存下来的标题**，不是你打的草稿。
 - **双击标题**是在宿主自己的标题元素上挂的监听（匹配 `crumbCurrent` 这个类名后缀），所以它是这一版里**唯一依赖宿主 DOM 的地方**：DSH 哪天把这个类名改了，双击会静默失效（⌘K → ⌘⇧R 那条路不受影响）。侧边栏那排会话的**双击归宿主管**（它弹自己的改名框），这里刻意不碰。
@@ -108,7 +111,7 @@ Use DSH's own **Add plugin** dialog. No npm account, no publishing.
 
 | Field | Value |
 |---|---|
-| GitHub | `github:kjx-talesofai/dsh-plugin-session-palette#v0.4.0` |
+| GitHub | `github:kjx-talesofai/dsh-plugin-session-palette#v0.5.0` |
 | Local directory | an absolute path, e.g. `/path/to/dsh-plugin-session-palette` |
 
 Restart the desktop app afterwards: the Host half is only loaded at startup. The browser half reloads with the page.
@@ -133,7 +136,9 @@ A tag is `id + label + optional emoji + colour`. Five colours, each a theme toke
 - **Where they live**: the plugin's Config, next to `takeOver`. Both tag fields are `.volatile()`, which is load-bearing twice — only volatile fields are accepted on write, and the Loader compares volatile fields out of its config diff, so saving a tag updates the running plugin instead of remounting it. Without that, the act of tagging would close the palette it was done from.
 - **Identity is the id**, derived from the label when the tag is created and stable afterwards, so renaming a tag later cannot orphan the sessions that point at it.
 - **The filter means "any of"**: tags are how you group work that spans workspaces and dates, so narrowing on two tags should show both groups, not their intersection.
-- **One picker**: the sidebar's session menu row opens the palette with that session highlighted and the picker already up, instead of growing a second tag UI that would have to be kept in step.
+- **One picker**, and one mode at a time. The sidebar's session menu row (with a tag icon, styled by the shipped `MenuItemButton`) opens the palette with that session highlighted and the picker already up, instead of growing a second tag UI to keep in step.
+
+The mode bar is the answer to "which row am I editing": it names the session, shows how full it is, and says the list is locked — because it *is*. Hovering or clicking a row while a mode owns the field does nothing, so the target cannot change under the editor.
 
 **This needs one DSH restart.** The tag store is new host-side Config, and the Host reads `index.js` at startup — so until DSH restarts, the picker says "Tags need one DSH restart" and refuses to write. It never pretends to save.
 
@@ -206,7 +211,7 @@ Upstream may change any of these. A failure in the shortcut contract is the one 
 ## Development
 
 ```sh
-npm test          # 96 tests, no install step required
+npm test          # 101 tests, no install step required
 ```
 
 There is deliberately **no build step**: `client.js` is the shipped browser bundle, and the Host half is a single `index.js`.

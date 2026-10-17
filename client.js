@@ -39,6 +39,50 @@ window.__ModuleLoader__.load({
 
     const h = React.createElement
 
+    /**
+     * The baseline primitive table, when the loader has it.
+     *
+     * `MenuItemButton` is what gives a session-menu row the shipped padding, hover
+     * and icon slot — a hand-rolled button beside Pin/Rename/Fork/Archive reads as
+     * bolted on. It is resolved optionally because the table is a loader external,
+     * not a dependency: if it is missing, the row falls back to its own button
+     * rather than taking the whole bundle down.
+     */
+    const MenuItemButton = (() => {
+      try {
+        const primitives = require('@deepseek-ai/dsh-client-ui-primitives')
+        return typeof primitives?.MenuItemButton === 'function' ? primitives.MenuItemButton : null
+      } catch (error) {
+        return null
+      }
+    })()
+
+    /**
+     * A tag glyph drawn in the shipped outline style.
+     *
+     * The table has no tag icon, and borrowing an unrelated one (a bookmark, a
+     * star) would say the wrong thing; this is the same 16-unit box, 1.4 stroke and
+     * `currentColor` as its neighbours.
+     */
+    const tagIcon = () =>
+      h(
+        'svg',
+        {
+          width: 14,
+          height: 14,
+          viewBox: '0 0 16 16',
+          fill: 'none',
+          stroke: 'currentColor',
+          strokeWidth: 1.4,
+          strokeLinejoin: 'round',
+          'aria-hidden': 'true',
+        },
+        h('path', {
+          d: 'M8.6 2.6H4a1.4 1.4 0 0 0-1.4 1.4v4.6l6.3 6.3a1 1 0 0 0 1.4 0l4.1-4.1a1 1 0 0 0 0-1.4L8.6 2.6z',
+        }),
+        h('circle', { cx: 5.6, cy: 5.6, r: 1, fill: 'currentColor', stroke: 'none' }),
+      )
+
     /** Locale namespace; also the slot registration's `locale` key. */
     const NS = 'dsh-plugin-session-palette'
 
@@ -691,11 +735,14 @@ window.__ModuleLoader__.load({
         'rename.aria': 'Session title',
         'rename.placeholder': 'Give this session a name',
         'rename.hint': '⏎ save · esc cancel',
+        'rename.bar': 'Renaming “{title}”',
         'rename.done': 'Renamed to “{title}”',
         'rename.failed': 'Could not rename: {reason}',
         'rename.unavailable': 'the session did not respond',
         'tags.aria': 'Tags',
         'tags.hint': '⏎ toggle · esc done',
+        'tags.bar': 'Tagging “{title}” · {n}/3',
+        'mode.locked': 'the list is locked while this is open',
         'tags.empty': 'No tags yet',
         'tags.emptyHint': 'Type a name and press ⏎ to create it.',
         'tags.create': 'Create “{label}”',
@@ -771,11 +818,14 @@ window.__ModuleLoader__.load({
         'rename.aria': '会话标题',
         'rename.placeholder': '给这个会话起个名字',
         'rename.hint': '⏎ 保存 · esc 取消',
+        'rename.bar': '正在改名：「{title}」',
         'rename.done': '已改名为「{title}」',
         'rename.failed': '改名失败：{reason}',
         'rename.unavailable': '会话没有响应',
         'tags.aria': '标签',
         'tags.hint': '⏎ 切换 · esc 完成',
+        'tags.bar': '正在打标签：「{title}」 · {n}/3',
+        'mode.locked': '这个模式下列表是锁的',
         'tags.empty': '还没有标签',
         'tags.emptyHint': '输入一个名字，按 ⏎ 新建。',
         'tags.create': '新建「{label}」',
@@ -841,13 +891,22 @@ window.__ModuleLoader__.load({
    token dims the row while staying legible in every theme. */
 .dsp-rowdim .dsp-rowtitle{color:var(--dsw-alias-label-secondary)}
 .dsp-rowmain{flex:1;min-width:0}
-.dsp-rowtitle{font-size:13px;line-height:18px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.dsp-rowtitle{display:flex;align-items:center;gap:6px;min-width:0;font-size:13px;line-height:18px}
+/* The title gives way, the tags never do: they are the thing being scanned. */
+.dsp-rowtitletext{flex:0 1 auto;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.dsp-rowtitle .dsp-rowtags{margin-left:2px}
 .dsp-rowsub{display:flex;align-items:center;gap:6px;font-size:11px;line-height:16px;color:var(--dsw-alias-label-tertiary)}
 .dsp-rowsub span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .dsp-mark{flex:none;display:inline-flex;align-items:center;gap:5px;font-size:11px;color:var(--dsw-alias-label-secondary)}
 .dsp-dot{width:7px;height:7px;border-radius:999px;background:var(--dsw-alias-state-idle-primary)}
 .dsp-dot-on{background:var(--dsw-alias-state-business-primary)}
 .dsp-dot-warn{background:var(--dsw-alias-state-warn-primary)}
+/* A mode owns the field, so the mode says so on its own line: which session it is
+   acting on, and how far along it is. Without this the field's border colour was
+   the only signal that ⌘⇧R/⌘⇧T had changed what typing does. */
+.dsp-modebar{display:flex;align-items:center;gap:8px;padding:6px 16px;border-bottom:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-secondary);font-size:11px;line-height:16px}
+.dsp-modebar strong{font-weight:600;color:var(--dsw-alias-label-primary)}
+.dsp-modebar-hint{margin-left:auto;color:var(--dsw-alias-label-tertiary)}
 /* Tags. A chip is one control in both places it appears — beside a session and
    in the filter bar — so pressing it must mean the same thing in both: filter. */
 .dsp-chips{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin-top:6px}
@@ -857,10 +916,14 @@ window.__ModuleLoader__.load({
 .dsp-chipglyph{flex:none}
 .dsp-chiplabel{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .dsp-chipcount{flex:none;color:var(--dsw-alias-label-tertiary)}
-.dsp-filters{display:flex;align-items:center;gap:6px;padding:0 16px 7px;overflow-x:auto;scrollbar-width:none}
+.dsp-filters{flex:none;display:flex;align-items:center;gap:6px;padding:8px 16px;border-bottom:1px solid var(--dsw-alias-border-l2);overflow-x:auto;overflow-y:hidden;scrollbar-width:none}
 .dsp-filtersempty{font-size:11px;line-height:16px;color:var(--dsw-alias-label-tertiary)}
 /* A row keeps its width: glyphs only, with the labels in the accessible name. */
 .dsp-rowtags{flex:none;display:inline-flex;align-items:center;gap:3px;font-size:11px;line-height:16px}
+/* While a mode owns the field the list is frozen, and says so with an accent on
+   the row the mode is acting on instead of a second hover highlight. */
+.dsp-row[data-dsp-target="true"]{box-shadow:inset 2px 0 0 var(--dsw-alias-state-business-primary)}
+.dsp-row[data-dsp-frozen="true"]{cursor:default}
 .dsp-tagdot{width:6px;height:6px;border-radius:999px;flex:none}
 .dsp-taglist{display:flex;flex-direction:column;gap:2px;margin-top:10px}
 .dsp-tagrow{display:flex;align-items:center;gap:8px;padding:5px 8px;border-radius:var(--dsw-radius-sm);cursor:pointer;font-size:13px;line-height:18px}
@@ -872,7 +935,8 @@ window.__ModuleLoader__.load({
 .dsp-tagmeta{flex:none;font-size:11px;color:var(--dsw-alias-label-tertiary)}
 /* The sidebar's own menu rows are the reference: same weight, same hover, so this
    entry does not look bolted on beside Pin/Rename/Fork/Archive. */
-.dsp-menuitem{display:block;box-sizing:border-box;width:100%;padding:6px 10px;border:0;border-radius:var(--dsw-radius-sm);background:0 0;color:var(--dsw-alias-label-primary);font:inherit;font-size:13px;line-height:18px;text-align:left;cursor:pointer}
+.dsp-menuitem{display:flex;align-items:center;gap:8px;box-sizing:border-box;width:100%;padding:6px 10px;border:0;border-radius:var(--dsw-radius-sm);background:0 0;color:var(--dsw-alias-label-primary);font:inherit;font-size:13px;line-height:18px;text-align:left;cursor:pointer}
+.dsp-menuitem > svg{flex:none;color:var(--dsw-alias-menu-icon,var(--dsw-alias-label-secondary))}
 .dsp-menuitem:hover{background:var(--dsw-alias-interactive-bg-hover)}
 .dsp-panetitle{font-size:14px;font-weight:600;line-height:20px;word-break:break-word}
 .dsp-panemeta{margin-top:2px;font-size:11px;line-height:16px;color:var(--dsw-alias-label-tertiary)}
@@ -1726,18 +1790,29 @@ window.__ModuleLoader__.load({
           .filter((label) => typeof label === 'string' && label !== '')
           .join(' · ')
 
-      /** One tag chip. The same control in the filter bar and in the preview. */
+      /**
+       * One tag chip.
+       *
+       * The same control in the filter bar and in the preview, because pressing a
+       * tag must mean the same thing wherever it appears: filter. Inside the picker
+       * it is display-only (`display: true`), since there the tag list is already
+       * the toggle surface and a second meaning would be a second mental model.
+       */
       const tagChip = (tag, options = {}) =>
         h(
-          'button',
+          options.display === true ? 'span' : 'button',
           {
             key: tag.id,
-            type: 'button',
-            tabIndex: -1,
-            className: 'dsp-chip',
-            'aria-pressed': tagFilterSet.has(tag.id) ? 'true' : 'false',
-            title: tag.label,
-            onClick: () => toggleTagFilter(tag.id),
+            ...(options.display === true
+              ? { className: 'dsp-chip' }
+              : {
+                  type: 'button',
+                  tabIndex: -1,
+                  className: 'dsp-chip',
+                  'aria-pressed': tagFilterSet.has(tag.id) ? 'true' : 'false',
+                  title: tag.label,
+                  onClick: () => toggleTagFilter(tag.id),
+                }),
           },
           tag.emoji !== ''
             ? h('span', { className: 'dsp-chipglyph' }, tag.emoji)
@@ -1769,17 +1844,56 @@ window.__ModuleLoader__.load({
                 role: 'option',
                 'aria-selected': selected ? 'true' : 'false',
                 'data-dsp-active': selected ? 'true' : undefined,
+                // A mode owns the field and its target: the list must not move under
+                // it, or the answer to "which session am I editing" changes silently.
+                'data-dsp-target': mode !== 'search' && selected ? 'true' : undefined,
+                'data-dsp-frozen': mode === 'search' ? undefined : 'true',
                 // Without this the click moves focus to <body>, after which no
                 // keydown passes through the card and every shortcut dies — on a
                 // path (an archived row) that deliberately keeps the palette open.
                 onMouseDown: (event) => event.preventDefault(),
-                onMouseEnter: () => setManualActiveId(row.id),
-                onClick: () => activate(row, archivedIds.has(row.id)),
+                onMouseEnter: () => {
+                  if (mode !== 'search') return
+                  setManualActiveId(row.id)
+                },
+                onClick: () => {
+                  if (mode !== 'search') return
+                  activate(row, archivedIds.has(row.id))
+                },
               },
               h(
                 'div',
                 { className: 'dsp-rowmain' },
-                h('div', { className: 'dsp-rowtitle' }, row.title),
+                h(
+                  'div',
+                  { className: 'dsp-rowtitle' },
+                  h('span', { className: 'dsp-rowtitletext' }, row.title),
+                  // Right after the title, where scanning happens — the trailing
+                  // edge already carries the status mark.
+                  row.tagIds.length === 0
+                    ? null
+                    : h(
+                        'span',
+                        {
+                          className: 'dsp-rowtags',
+                          title: tagLabelsOf(row.tagIds),
+                          'aria-label': tagLabelsOf(row.tagIds),
+                        },
+                        row.tagIds.map((tagId) => {
+                          const tag = tagIndex.get(tagId)
+                          if (tag === undefined) return null
+                          return tag.emoji !== ''
+                            ? h('span', { key: tagId, className: 'dsp-chipglyph' }, tag.emoji)
+                            : h('span', {
+                                key: tagId,
+                                className: 'dsp-tagdot',
+                                style: {
+                                  background: TAG_COLOR_TOKEN[tag.color] ?? TAG_COLOR_TOKEN.gray,
+                                },
+                              })
+                        }),
+                      ),
+                ),
                 h(
                   'div',
                   { className: 'dsp-rowsub' },
@@ -1788,29 +1902,6 @@ window.__ModuleLoader__.load({
                   h('span', null, agoText(t, row.updatedAt, now)),
                 ),
               ),
-              row.tagIds.length === 0
-                ? null
-                : h(
-                    'span',
-                    {
-                      className: 'dsp-rowtags',
-                      // The labels are the accessible name; the visible strip is
-                      // glyphs only, so a row's width does not depend on its tags.
-                      title: tagLabelsOf(row.tagIds),
-                      'aria-label': tagLabelsOf(row.tagIds),
-                    },
-                    row.tagIds.map((tagId) => {
-                      const tag = tagIndex.get(tagId)
-                      if (tag === undefined) return null
-                      return tag.emoji !== ''
-                        ? h('span', { key: tagId, className: 'dsp-chipglyph' }, tag.emoji)
-                        : h('span', {
-                            key: tagId,
-                            className: 'dsp-tagdot',
-                            style: { background: TAG_COLOR_TOKEN[tag.color] ?? TAG_COLOR_TOKEN.gray },
-                          })
-                    }),
-                  ),
               row.tier === 0
                 ? h(RowMark, { dotClass: 'dsp-dot-warn', label: t(row.pendingLabel) })
                 : row.tier === 1
@@ -1985,6 +2076,22 @@ window.__ModuleLoader__.load({
             { key: 'meta', className: 'dsp-panemeta' },
             tags.ready ? t('tags.hint') : t('tags.notReadyHint'),
           ),
+          // What this session already carries, so tagging never hides the state it
+          // is editing. Display chips, not the filter control: the list below is the
+          // only toggle surface in this mode.
+          h(
+            'div',
+            { key: 'chips', className: 'dsp-chips' },
+            activeRow.tagIds
+              .map((tagId) => tagIndex.get(tagId))
+              .filter((tag) => tag !== undefined)
+              .map((tag) => tagChip(tag, { display: true })),
+            h(
+              'span',
+              { className: 'dsp-tagmeta' },
+              t('tags.count', { n: activeRow.tagIds.length }),
+            ),
+          ),
           !tags.ready
             ? h('div', { key: 'notready', className: 'dsp-note', role: 'status' }, t('tags.notReady'))
             : null,
@@ -2113,6 +2220,27 @@ window.__ModuleLoader__.load({
                   : t('tags.hint'),
             ),
           ),
+          // A mode owns the field, so it says which session it is acting on and
+          // that the list is frozen. Without this the only signal was the field's
+          // border colour, which left "did ⌘⇧T take?" and "which row am I editing?"
+          // to be guessed.
+          mode === 'search'
+            ? null
+            : h(
+                'div',
+                { className: 'dsp-modebar', role: 'status' },
+                h(
+                  'span',
+                  null,
+                  mode === 'rename'
+                    ? t('rename.bar', { title: activeRow === null ? '' : activeRow.title })
+                    : t('tags.bar', {
+                        title: activeRow === null ? '' : activeRow.title,
+                        n: activeRow === null ? 0 : activeRow.tagIds.length,
+                      }),
+                ),
+                h('span', { className: 'dsp-modebar-hint' }, t('mode.locked')),
+              ),
           // A rejected write leaves the field in rename mode with its draft intact,
           // so the reason gets its own line: retyping and pressing Enter again is
           // the whole recovery path.
@@ -2463,19 +2591,21 @@ window.__ModuleLoader__.load({
       const hook = props.useMenuOpenState
       const menu = typeof hook === 'function' ? hook() : null
       const setMenuOpen = Array.isArray(menu) ? menu[1] : null
-      return h(
-        'button',
-        {
-          type: 'button',
-          role: 'menuitem',
-          className: 'dsp-menuitem',
-          onClick: () => {
-            if (typeof setMenuOpen === 'function') setMenuOpen(false)
-            palette.openTags(sessionId)
-          },
-        },
-        t('tags.manage'),
-      )
+      const open = () => {
+        if (typeof setMenuOpen === 'function') setMenuOpen(false)
+        palette.openTags(sessionId)
+      }
+      // The shipped row component when the loader has it, so this row sits in the
+      // menu like the ones around it; the fallback keeps the feature alive without
+      // it.
+      return MenuItemButton === null
+        ? h(
+            'button',
+            { type: 'button', role: 'menuitem', className: 'dsp-menuitem', onClick: open },
+            tagIcon(),
+            h('span', { className: 'dsp-menuitemlabel' }, t('tags.manage')),
+          )
+        : h(MenuItemButton, { icon: tagIcon(), onSelect: open }, t('tags.manage'))
     }
 
     //#endregion

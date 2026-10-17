@@ -629,9 +629,17 @@ test('registers the package id and requires only react', () => {
   assert.equal(typeof loaded.plugin.apply, 'function')
 })
 
-test('client.js imports no harness client package', () => {
+test('client.js requires react, and only optionally the primitives table', () => {
   const requires = [...clientSource.matchAll(/require\(\s*'([^']+)'\s*\)/g)].map((match) => match[1])
-  assert.deepEqual(requires, ['react'], `unexpected require(): ${requires.join(', ')}`)
+  // Two, and the second one is guarded: `MenuItemButton` is a loader external, so
+  // a table without it must cost the menu row's styling, never the whole bundle.
+  assert.deepEqual(requires, ['react', '@deepseek-ai/dsh-client-ui-primitives'])
+  assert.match(
+    clientSource,
+    /try \{\s*\n\s*const primitives = require\('@deepseek-ai\/dsh-client-ui-primitives'\)/,
+    'the primitives lookup is inside a try',
+  )
+  assert.match(clientSource, /MenuItemButton === null/, 'and there is a fallback path')
   assert.ok(
     !clientSource.includes("from '@deepseek-ai/"),
     'client.js must not import a harness package',
@@ -1387,7 +1395,7 @@ test('an archived row is dimmed, refuses to open, and explains itself', () => {
   // Recents lists the live row and must not contain the archived one.
   const recents = ui.all('dsp-row')
   assert.equal(recents.length, 1, 'recents lists exactly the live session')
-  assert.equal(recents[0].children[0].children[0].children[0], 'Live')
+  assert.deepEqual(rowTitles(ui), ['Live'])
 
   ui.find('dsp-card').props.onKeyDown(press('Tab', { shiftKey: true })) // backwards -> archived
   const row = ui.find('dsp-row')
@@ -1562,10 +1570,7 @@ test('a null row does not take the whole slot entry down', () => {
       projectionsBySession: {},
     },
   })
-  const titles = ui
-    .all('dsp-rowtitle')
-    .flatMap((node) => node.children.filter((child) => typeof child === 'string'))
-  assert.deepEqual(titles, ['Fine'], 'the good row still renders')
+  assert.deepEqual(rowTitles(ui), ['Fine'], 'the good row still renders')
 })
 
 test('reopening does not greet you with the last action\'s message', () => {
@@ -1597,6 +1602,19 @@ function startRenameUi(rows, ctx = {}) {
   made.ui.find('dsp-card').props.onKeyDown(chord)
   return { ...made, chord }
 }
+
+/**
+ * The visible title text of every rendered session row.
+ *
+ * The title is a `<span>` inside `dsp-rowtitle` because the tag glyphs sit beside
+ * it — reading the container's children as strings stopped being meaningful the
+ * moment tags could follow a title.
+ */
+const rowTitles = (ui) =>
+  ui
+    .all('dsp-rowtitle')
+    .map((node) => node.children.find((child) => child?.props?.className === 'dsp-rowtitletext'))
+    .map((node) => (node === undefined ? null : node.children.filter((c) => typeof c === 'string').join('')))
 
 /** The ids of the rows currently published as selected. */
 const selectedIds = (ui) =>
@@ -1654,7 +1672,7 @@ test('an untitled session seeds an empty draft, not its folder fallback', () => 
 
   // Seeding that fallback would turn derived text into user data the moment the
   // user pressed Enter unchanged.
-  assert.equal(made.ui.find('dsp-rowtitle').children[0], 'project')
+  assert.deepEqual(rowTitles(made.ui), ['project'])
   assert.equal(made.ui.find('dsp-input').props.value, '')
 })
 
@@ -2045,12 +2063,9 @@ test('a query finds a Session by a directory on its path, not just by its title'
     ]),
   })
   ui.find('dsp-input').props.onChange({ target: { value: 'test-dsh' } })
-  const titles = ui
-    .all('dsp-rowtitle')
-    .flatMap((node) => node.children.filter((child) => typeof child === 'string'))
   // Before the path was included, "test-dsh" matched nothing: the only searchable
   // strings were the title and the folder *basename* ("palette").
-  assert.deepEqual(titles, ['Build the thing'])
+  assert.deepEqual(rowTitles(ui), ['Build the thing'])
 })
 
 test('a renamed workspace does not hide the folder it lives in', () => {
@@ -2068,10 +2083,7 @@ test('a renamed workspace does not hide the folder it lives in', () => {
   // The workspace title wins as the subtitle, which is exactly why the folder has
   // to stay searchable on its own.
   ui.find('dsp-input').props.onChange({ target: { value: 'project_silo' } })
-  const titles = ui
-    .all('dsp-rowtitle')
-    .flatMap((node) => node.children.filter((child) => typeof child === 'string'))
-  assert.deepEqual(titles, ['Silo 产品立项'])
+  assert.deepEqual(rowTitles(ui), ['Silo 产品立项'])
 })
 
 //#endregion
@@ -2195,19 +2207,14 @@ test('a tag chip filters the list, and clicking it again clears the filter', () 
     sessions: sessionsOf([{ id: 'a', title: 'Tagged' }, { id: 'b', title: 'Plain' }]),
     ctx: { configValue: tagsConfig() },
   })
-  const titles = () =>
-    ui
-      .all('dsp-rowtitle')
-      .flatMap((node) => node.children.filter((child) => typeof child === 'string'))
-
-  assert.deepEqual(titles(), ['Tagged', 'Plain'])
+  assert.deepEqual(rowTitles(ui), ['Tagged', 'Plain'])
   const chip = ui.all('dsp-chip')[0]
   chip.props.onClick()
-  assert.deepEqual(titles(), ['Tagged'], 'only the tagged session survives')
+  assert.deepEqual(rowTitles(ui), ['Tagged'], 'only the tagged session survives')
   assert.equal(ui.all('dsp-chip')[0].props['aria-pressed'], 'true')
 
   ui.all('dsp-chip')[0].props.onClick()
-  assert.deepEqual(titles(), ['Tagged', 'Plain'], 'and the filter is a toggle')
+  assert.deepEqual(rowTitles(ui), ['Tagged', 'Plain'], 'and the filter is a toggle')
 })
 
 test('the filter bar lists only tags in use, and offers a way out', () => {
@@ -2236,11 +2243,7 @@ test('the filter bar lists only tags in use, and offers a way out', () => {
   assert.ok(clear !== undefined, 'and a clear control appears while a filter is active')
 
   clear.props.onClick()
-  assert.deepEqual(
-    ui.all('dsp-rowtitle').flatMap((node) => node.children.filter((c) => typeof c === 'string')),
-    ['Tagged', 'Plain'],
-    'clearing restores the list',
-  )
+  assert.deepEqual(rowTitles(ui), ['Tagged', 'Plain'], 'clearing restores the list')
 })
 
 test('a Host that cannot store tags says so instead of pretending', async () => {
@@ -2294,9 +2297,13 @@ test('the sidebar menu row opens the palette in tag mode for its own row', () =>
     props: { sessionId: 'a', displayTitle: 'A' },
   })
 
+  // Without the primitives table the row falls back to its own button, and it still
+  // carries an icon: an icon-less row beside Pin/Rename/Fork/Archive is the thing
+  // this fallback must not reproduce.
   const row = ui.find('dsp-menuitem')
   assert.equal(row.props.role, 'menuitem')
-  assert.deepEqual(row.children, ['tags.manage'])
+  assert.equal(row.children[0].type, 'svg', 'the tag glyph')
+  assert.deepEqual(row.children[1].children, ['tags.manage'])
   row.props.onClick()
 
   // The row defers to the palette: one picker, aimed at the row the menu belonged to.
@@ -2320,6 +2327,95 @@ test('a tag request is consumed once, so ⌘K later opens a plain palette', () =
     .filter((row) => row.props['aria-selected'] === 'true')
     .map((row) => row.props.id)
   assert.deepEqual(selected, ['dsp-opt-b'], 'aimed at the requested session')
+})
+
+//#endregion
+
+//#region what the mode owns
+//
+// The complaint that produced these: "I can't see which session I'm on, and the
+// arrows still move the list." A mode now (a) names its target on its own line,
+// (b) says the list is locked, and (c) actually locks it.
+
+test('the mode bar names the session it is acting on', () => {
+  const { ui } = tagUi()
+  const bar = () => ui.find('dsp-modebar')
+  const text = () =>
+    bar()
+      .children.flat(Infinity)
+      .filter((child) => typeof child === 'string' || typeof child?.children?.[0] === 'string')
+      .map((child) => (typeof child === 'string' ? child : child.children[0]))
+      .join(' ')
+
+  assert.match(text(), /tags\.bar/, 'which mode')
+  assert.match(text(), /Tagged one/, 'and which session')
+  assert.match(text(), /"n":1/, 'and how full it is')
+  assert.match(text(), /mode\.locked/, 'and that the list will not move')
+
+  // Escape leaves the mode, and the bar goes with it.
+  ui.find('dsp-card').props.onKeyDown(press('Escape'))
+  assert.equal(bar(), null)
+})
+
+test('the rename mode bar names the session too', () => {
+  const { ui } = paletteUi({ sessions: sessionsOf([{ id: 'a', title: 'Old name' }]) })
+  ui.find('dsp-card').props.onKeyDown(press('r', { shiftKey: true, metaKey: true }))
+  const text = ui
+    .find('dsp-modebar')
+    .children.flat(Infinity)
+    .map((child) => (typeof child === 'string' ? child : child?.children?.[0]))
+    .filter((child) => typeof child === 'string')
+    .join(' ')
+  assert.match(text, /rename\.bar/)
+  assert.match(text, /Old name/)
+})
+
+test('while tagging, hovering or clicking the list cannot move the target', () => {
+  const { ui, record } = tagUi()
+  const target = () =>
+    ui
+      .all('dsp-row')
+      .filter((row) => row.props['data-dsp-target'] === 'true')
+      .map((row) => String(row.props.id).replace(/^dsp-opt-/, ''))
+
+  assert.deepEqual(target(), ['a'], 'the row the picker opened on')
+
+  // Hovering "Plain one" used to retarget the picker silently. Now the list is
+  // frozen for as long as the mode owns the field.
+  const other = ui.all('dsp-row')[1]
+  other.props.onMouseEnter()
+  other.props.onClick()
+  assert.deepEqual(target(), ['a'])
+  assert.deepEqual(record.openSession, [], 'and a click does not open a session either')
+  assert.equal(ui.find('dsp-row').props['data-dsp-frozen'], 'true')
+
+  // Every row carries the frozen marker, so the affordance matches the behaviour.
+  assert.ok(ui.all('dsp-row').every((row) => row.props['data-dsp-frozen'] === 'true'))
+})
+
+test('the picker shows the tags the session already has, without hiding them', () => {
+  const { ui } = tagUi({ config: { assignments: [{ sessionId: 'a', tags: ['fire', 'lab'] }] } })
+  const picker = ui.find('dsp-taglist')
+  assert.ok(picker !== null)
+
+  // The chips above the list are display-only: pressing a tag must mean "filter"
+  // everywhere else, so it cannot mean "toggle" here.
+  const chipNodes = ui.all('dsp-chip').filter((chip) => chip.type === 'span')
+  assert.equal(chipNodes.length, 2, 'both tags are visible while tagging')
+  // The bar's chips are still buttons — those filter. These two are not.
+  assert.ok(chipNodes.every((chip) => chip.props['aria-pressed'] === undefined))
+  assert.equal(ui.find('dsp-tagmeta').children[0], 'tags.count({"n":2})')
+})
+
+test('tags sit after the title, not at the trailing edge', () => {
+  const { ui } = paletteUi({
+    sessions: sessionsOf([{ id: 'a', title: 'Tagged' }]),
+    ctx: { configValue: tagsConfig() },
+  })
+  const title = ui.find('dsp-rowtitle')
+  assert.equal(title.children[0].props.className, 'dsp-rowtitletext', 'the text comes first')
+  assert.equal(title.children[1].props.className, 'dsp-rowtags', 'then the tags')
+  assert.equal(title.children[1].props['aria-label'], '重要')
 })
 
 //#endregion

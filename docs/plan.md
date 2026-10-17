@@ -968,3 +968,45 @@ if (!priority && (main || !match)) return                  // ← 主框架：�
 - **候选编辑器（emoji / 颜色 / 改名）还没做**，本版只能新建（颜色按环取）、分配、移除。Plugin 管理的 configure 页暂时显示原始数据。这是下一个版本。
 - 标签是**这个 profile 的**数据，不进 session 日志，所以换机器不同步。
 - mutation 验证：去掉筛选 → 1 红；去掉 3 个上限 → 1 红；菜单项不关闭菜单 → 1 红。（`toggleTag` 里那道 `ready` 守卫是第二道防线 —— 外层 `pickTag` 已经拦住，所以单独拆掉它测试仍是绿的，这是"深度防御"而不是"没测到"。）
+
+---
+
+## 14. v0.5.0：让"模式"看得见（2026-10-18）
+
+用户四条反馈里最重的一条：**"按了快捷键后交互有点难理解……我看不到 focus 在哪个 session……为什么还可以上下移动选择 session"**。
+
+### 14.1 为什么会这样（诊断）
+
+三个独立的模糊叠在一起：
+
+1. **唯一的模式信号是输入框的边框色**（`.dsp-inputrow-renaming` 换了个边框颜色）。⌘⇧T 到底生效没有，得靠猜。
+2. **屏幕上有两个"高亮"**：会话行是 `aria-selected` 的 hover 底，标签选项是 `data-dsp-tagactive` 的 hover-solid 底。两个都是"淡灰底"，看起来是同一套光标，实际上一个是被改的目标、一个是候选。
+3. **鼠标还能换目标**：`onMouseEnter → setManualActiveId` 在模式里照旧生效，于是"要改的是哪一行"会**在你不注意的时候变掉**（键盘没变，鼠标变了）。点击更糟：`onClick` 甚至会打开那个会话。
+
+### 14.2 改法
+
+| 症状 | 改法 |
+| --- | --- |
+| 不确定在哪个模式 | 输入框下面加一条 **模式条**（`.dsp-modebar`，`role="status"`）：`正在打标签：「标题」 · 1/3` / `正在改名：「标题」`，右侧固定写 `列表是锁的` |
+| 看不出 focus 在哪行 | 目标行加 `data-dsp-target` → **左侧 2px 强调条**（business token）；候选高亮保持原来的 hover-solid，两者不再长得一样 |
+| 为什么上下键还能换 session | 不能：↑↓ 在标签列表里移动。真正在换的是**鼠标悬浮**，所以模式期间 `onMouseEnter` / `onClick` 直接 return，行上标 `data-dsp-frozen="true"`（`cursor:default`）|
+| 打标签时看不到已有的标签 | 选择器顶部列出这个会话现有的标签（**只读 chip**，`span` 而不是 `button`：点标签在别处是"筛选"，在这里不能变成"切换"，否则一个控件两种含义）+ `n/3` |
+| 标题后的标签（反馈 3） | 行标题改成 flex：`标题文字(可省略) + 标签(svg/emoji，永不省略)`，标签跟标题，不占右边缘 |
+| 侧边栏菜单行没图标（反馈 1） | 改用 `MenuItemButton`（宿主的菜单行组件，自带图标位/间距/hover），图标是自绘的 14px 描边 tag —— 宿主图标表里没有 tag，借 bookmark/star 会表错意 |
+| 标签条被挤/遮挡（反馈 2） | `.dsp-filters` 从 `padding:0 16px 7px` + 隐式 `overflow-y` 裁切，改成独立一行 `padding:8px 16px` + 下边框 + `overflow-y:hidden`，且 `flex:none` 不被压扁 |
+
+### 14.3 菜单图标：为什么 require 了一个宿主包
+
+`MenuItemButton` 在 `@deepseek-ai/dsh-client-ui-primitives` 里，是 Module Loader 的**基线 external**（文档明写：Module Loader 包可以 `require` 它，不要另包一份）。它自带图标槽位，是"和其他行一样"的唯一可靠做法。取它是**可选**的：
+
+```js
+const MenuItemButton = (() => { try { … } catch { return null } })()
+```
+
+拿不到就退回自己的 `.dsp-menuitem`（仍然有图标），不会因为外部表少一项就把整个 bundle 弄挂。测试把这条钉住了：`require` 只能有 `react` 和一个**包在 try 里**的 primitives；并且源码里必须存在 `MenuItemButton === null` 的退路。
+
+### 14.4 仍然没做
+
+- **会话头部标题后面**没有标签。`conversation.session.header.lineage` 的 fallback 只在**没人占用**时渲染（`ui-renderer`：`if (!entry) return fallback`），占用它就会把子 agent 面包屑的标题吃掉 —— 那是复刻宿主 UI，不做。
+- 候选标签的 emoji / 颜色编辑器还没做（见 §13.4）。
+- 5 个 mutation 验证：去掉模式条 / 悬浮可换目标 / 标签退回右边缘 / 只读 chip 变按钮 —— 都会让套件变红。
