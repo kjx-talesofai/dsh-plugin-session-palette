@@ -4,7 +4,7 @@
 
 # dsh-plugin-session-palette
 
-Press <kbd>⌘K</kbd> and get a **Spotlight-style session palette** instead of a search box in the corner — recent first, running and waiting sessions on top, a preview of each session's **last turn** before you commit to opening it, and two ways to **rename a session in place** — <kbd>⌘⇧R</kbd> on the highlighted row, or a **double click on the title** at the top of an open conversation.
+Press <kbd>⌘K</kbd> and get a **Spotlight-style session palette** instead of a search box in the corner — recent first, running and waiting sessions on top, a preview of each session's **last turn** before you commit to opening it, two ways to **rename a session in place** — <kbd>⌘⇧R</kbd> on the highlighted row, or a **double click on the title** at the top of an open conversation — and **tags**: up to three per session, clickable to filter.
 
 <p align="center">
   <a href="https://github.com/kjx-talesofai/dsh-plugin-session-palette/releases"><img src="https://img.shields.io/github/v/release/kjx-talesofai/dsh-plugin-session-palette?label=release&style=flat-square&color=blue" alt="release"></a>
@@ -13,7 +13,7 @@ Press <kbd>⌘K</kbd> and get a **Spotlight-style session palette** instead of a
   <img src="https://img.shields.io/badge/DSH-%E2%89%A5%200.2.0--rc.1-blueviolet?style=flat-square" alt="DSH >= 0.2.0-rc.1">
 </p>
 
-> dsh-plugin-session-palette — ⌘K 弹出会话面板：最近优先，正在运行与等待你的置顶，预览最后一个 turn，⌘⇧R 或双击标题就地改名
+> dsh-plugin-session-palette — ⌘K 弹出会话面板：最近优先，正在运行与等待你的置顶，预览最后一个 turn，⌘⇧R 或双击标题就地改名，还能给会话打标签（最多 3 个，点标签就筛选）
 
 <details>
 <summary><b>中文说明（点开）</b> —— ⌘K 从「聚焦侧边栏搜索框」变成「蹦出一个会话面板」</summary>
@@ -38,7 +38,7 @@ Press <kbd>⌘K</kbd> and get a **Spotlight-style session palette** instead of a
 
 | 填入 | 形式 |
 |---|---|
-| GitHub | `github:kjx-talesofai/dsh-plugin-session-palette#v0.3.0`（当前可用） |
+| GitHub | `github:kjx-talesofai/dsh-plugin-session-palette#v0.4.0`（当前可用） |
 | 本地目录 | 绝对路径，例如 `/path/to/dsh-plugin-session-palette` |
 
 装完**重启桌面端**（host 半边只在启动时加载）。
@@ -53,6 +53,7 @@ Press <kbd>⌘K</kbd> and get a **Spotlight-style session palette** instead of a
 | <kbd>⏎</kbd> | 打开高亮的会话 |
 | <kbd>⌘⇧R</kbd> | 给高亮的会话**改名**（复用上面那个输入框，⏎ 保存 / esc 取消） |
 | **双击标题** | 在已经打开的会话里，双击顶部那个名字 → 就地弹出输入框改名 |
+| <kbd>⌘⇧T</kbd> | 给高亮的会话打标签（右栏变成标签选择器：打字筛/新建、<kbd>⏎</kbd> 加或去掉、<kbd>esc</kbd> 完成） |
 | <kbd>Tab</kbd> / <kbd>⇧Tab</kbd> | 循环三个视图 |
 | <kbd>⌘⇧P</kbd> | 置顶 / 取消置顶 |
 | <kbd>⌘⇧⌫</kbd> | 归档 / 恢复 |
@@ -62,6 +63,9 @@ Press <kbd>⌘K</kbd> and get a **Spotlight-style session palette** instead of a
 
 - **它会接管 <kbd>⌘K</kbd>**，这是它存在的意义。侧边栏那个搜索按钮**照旧能用**（鼠标点），只是键盘快捷键让给了面板。
 - **改名不是新开一个输入框**：<kbd>⌘⇧R</kbd> 之后，你最上面那个搜索框**原地变成标题编辑框**（列表还按你原来的查询筛着，高亮还停在要改的那一行）。打完 <kbd>⏎</kbd> 保存，<kbd>esc</kbd> 放弃；失败时原因显示在输入框下面一行，草稿不会被吃掉。成功后的提示里带**撤销**。
+- **标签存在插件的 Config 里**（volatile 字段），写在 profile 的 `cordis.patch.yml`，重启后还在。**每个会话最多 3 个**；标签是「文字 + 可选 emoji + 颜色」，颜色只用主题 token，所以亮/暗色都跟着走。
+- **点标签就是筛选**：面板里那排标签（只列真正用上的）点一下筛，再点一下取消，多个标签是「任一命中」。预览窗格里会话自己的标签也是同一个控件。
+- **标签需要一次 DSH 重启才生效**：存储字段是本版新加的 host 字段，而 host 半边只在启动时读。没重启之前，选择器会直接说「标签需要重启一次 DSH」，不会假装保存成功。
 - **标题有字节上限**（DSH 默认 80 字节，中文约 26 个字）。超了 host 会截断，面板的提示报的是**实际存下来的标题**，不是你打的草稿。
 - **双击标题**是在宿主自己的标题元素上挂的监听（匹配 `crumbCurrent` 这个类名后缀），所以它是这一版里**唯一依赖宿主 DOM 的地方**：DSH 哪天把这个类名改了，双击会静默失效（⌘K → ⌘⇧R 那条路不受影响）。侧边栏那排会话的**双击归宿主管**（它弹自己的改名框），这里刻意不碰。
 - **它一个字都不改你的按键偏好**。接管走的是「固定键位」这条官方通道，只在内存里生效；所以**想关掉就干净地关掉**，没有需要还原的东西。
@@ -104,7 +108,7 @@ Use DSH's own **Add plugin** dialog. No npm account, no publishing.
 
 | Field | Value |
 |---|---|
-| GitHub | `github:kjx-talesofai/dsh-plugin-session-palette#v0.3.0` |
+| GitHub | `github:kjx-talesofai/dsh-plugin-session-palette#v0.4.0` |
 | Local directory | an absolute path, e.g. `/path/to/dsh-plugin-session-palette` |
 
 Restart the desktop app afterwards: the Host half is only loaded at startup. The browser half reloads with the page.
@@ -120,6 +124,18 @@ This plugin is **not published to npm**, and `npm install` is not the install pa
 5. <kbd>⌘⇧R</kbd> renames the highlighted session right there — the search field becomes the title field, <kbd>⏎</kbd> saves, <kbd>esc</kbd> cancels.
 6. <kbd>⌘⇧P</kbd> pins, <kbd>⌘⇧⌫</kbd> archives, and both toggle — so the same chord restores.
 7. In an open conversation, **double-click the title** in the header to rename it there — the same editor, floated over the title's own box.
+8. <kbd>⌘⇧T</kbd> opens the tag picker for the highlighted session: type to narrow, type a name nothing matches to **create** it, <kbd>⏎</kbd> toggles, <kbd>esc</kbd> done. Tags show as glyphs on the row and as chips in the preview; **clicking a chip filters** the list (several = any of them).
+
+### Tags
+
+A tag is `id + label + optional emoji + colour`. Five colours, each a theme token, so light and dark follow without a second palette. A session carries **at most three**; the ceiling is refused out loud ("Three tags is the limit") rather than truncated, because a fourth tag the user cannot see is worse than a no.
+
+- **Where they live**: the plugin's Config, next to `takeOver`. Both tag fields are `.volatile()`, which is load-bearing twice — only volatile fields are accepted on write, and the Loader compares volatile fields out of its config diff, so saving a tag updates the running plugin instead of remounting it. Without that, the act of tagging would close the palette it was done from.
+- **Identity is the id**, derived from the label when the tag is created and stable afterwards, so renaming a tag later cannot orphan the sessions that point at it.
+- **The filter means "any of"**: tags are how you group work that spans workspaces and dates, so narrowing on two tags should show both groups, not their intersection.
+- **One picker**: the sidebar's session menu row opens the palette with that session highlighted and the picker already up, instead of growing a second tag UI that would have to be kept in step.
+
+**This needs one DSH restart.** The tag store is new host-side Config, and the Host reads `index.js` at startup — so until DSH restarts, the picker says "Tags need one DSH restart" and refuses to write. It never pretends to save.
 
 ### Renaming
 
@@ -152,6 +168,7 @@ The preview comes from the host's `turnOutline` projection, which already carrie
 
 ## What it does not reach
 
+- **No tag editor yet.** Tags are created from the picker (label only, colour assigned in a ring); there is no UI yet for emoji, colour or renaming a tag — that is the next release. The Config page in Plugin management shows the raw data in the meantime.
 - **No content search yet.** Matching covers the session title, the workspace name and the workspace path. The message-body search the shipped sidebar performs is not wired in.
 - **No query language yet.** `@workspace`, `is:archived`, `after:7d` and filter chips are designed but not implemented.
 - **No settings UI yet.** The one switch (`takeOver`) lives in your profile's `cordis.patch.yml`:
@@ -189,7 +206,7 @@ Upstream may change any of these. A failure in the shortcut contract is the one 
 ## Development
 
 ```sh
-npm test          # 82 tests, no install step required
+npm test          # 96 tests, no install step required
 ```
 
 There is deliberately **no build step**: `client.js` is the shipped browser bundle, and the Host half is a single `index.js`.

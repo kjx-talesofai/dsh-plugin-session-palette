@@ -101,6 +101,30 @@ window.__ModuleLoader__.load({
      */
     const TITLE_SELECTOR = '[class*="crumbCurrent"]'
 
+    /**
+     * Tag colours, as theme tokens rather than hex.
+     *
+     * Five, not twelve: a personal vocabulary stays readable when the colours are
+     * a small closed set, and each one maps to a token the theme already ships, so
+     * light, dark and a third-party token layer all follow.
+     */
+    const TAG_COLORS = ['blue', 'green', 'amber', 'red', 'gray']
+
+    /** Colour name → token. Unknown names fall back to the idle token. */
+    const TAG_COLOR_TOKEN = {
+      blue: 'var(--dsw-alias-state-business-primary)',
+      green: 'var(--dsw-alias-state-success-primary)',
+      amber: 'var(--dsw-alias-state-warn-primary)',
+      red: 'var(--dsw-alias-state-error-primary)',
+      gray: 'var(--dsw-alias-state-idle-primary)',
+    }
+
+    /** A session carries at most this many tags. */
+    const MAX_TAGS = 3
+
+    /** Present with nothing in it, for a Host whose schema predates tags. */
+    const EMPTY_TAGS = { ready: false, vocabulary: [], assignments: {} }
+
     /** Rows rendered before the list is truncated, to keep 1500+ sessions cheap. */
     const ROW_LIMIT = 200
 
@@ -479,6 +503,128 @@ window.__ModuleLoader__.load({
 
     //#endregion
 
+    //#region tags
+
+    /**
+     * Clean the stored vocabulary.
+     *
+     * Config is a file a human can edit, so every field is treated as untrusted:
+     * a tag without a usable id or label is dropped rather than rendered as an
+     * empty pill, and an unknown colour falls back instead of inventing a hex.
+     *
+     * @param raw - the `tags` field, or anything else.
+     * @returns the usable vocabulary, in stored order.
+     */
+    function normalizeVocabulary(raw) {
+      if (!Array.isArray(raw)) return []
+      const seen = new Set()
+      const out = []
+      for (const entry of raw) {
+        if (entry === null || typeof entry !== 'object') continue
+        const id = typeof entry.id === 'string' ? entry.id.trim() : ''
+        const label = typeof entry.label === 'string' ? entry.label.trim() : ''
+        if (id === '' || label === '' || seen.has(id)) continue
+        seen.add(id)
+        out.push({
+          id,
+          label,
+          emoji: typeof entry.emoji === 'string' ? entry.emoji.trim() : '',
+          color: typeof entry.color === 'string' && entry.color in TAG_COLOR_TOKEN ? entry.color : 'gray',
+        })
+      }
+      return out
+    }
+
+    /**
+     * Clean the stored assignments.
+     *
+     * Entries with no tags are dropped, unknown tag ids are dropped, and the
+     * three-tag ceiling is enforced on read as well as on write — a hand-edited
+     * config cannot smuggle in a fourth tag.
+     *
+     * @param raw - the `assignments` field, or anything else.
+     * @param known - ids that exist in the vocabulary.
+     * @returns `{ sessionId: string[], ... }` with only populated sessions.
+     */
+    function normalizeAssignments(raw, known) {
+      const out = {}
+      if (!Array.isArray(raw)) return out
+      for (const entry of raw) {
+        if (entry === null || typeof entry !== 'object') continue
+        const sessionId = typeof entry.sessionId === 'string' ? entry.sessionId : ''
+        if (sessionId === '') continue
+        const ids = Array.isArray(entry.tags) ? entry.tags : []
+        const kept = []
+        for (const id of ids) {
+          if (typeof id !== 'string' || !known.has(id) || kept.includes(id)) continue
+          kept.push(id)
+          if (kept.length === MAX_TAGS) break
+        }
+        if (kept.length > 0) out[sessionId] = kept
+      }
+      return out
+    }
+
+    /**
+     * A new tag's id, derived from its label.
+     *
+     * Identity is the id, so a label can be edited later without orphaning the
+     * sessions that point at it. The suffix keeps two tags with the same label in
+     * different languages from colliding.
+     *
+     * @param label - the user's text.
+     * @param taken - ids already in use.
+     * @returns a unique id.
+     */
+    function tagIdFor(label, taken) {
+      const stem =
+        label
+          .trim()
+          .toLowerCase()
+          .replace(/[^\p{L}\p{N}]+/gu, '-')
+          .replace(/^-+|-+$/gu, '') || 'tag'
+      let id = stem
+      let index = 2
+      while (taken.has(id)) {
+        id = `${stem}-${index}`
+        index += 1
+      }
+      return id
+    }
+
+    /**
+     * Write one session's tags into the assignment list.
+     *
+     * @param assignments - the normalized map.
+     * @param sessionId - whose tags changed.
+     * @param ids - the complete new list (empty removes the entry).
+     * @returns the flat list the Config field expects.
+     */
+    function withAssignment(assignments, sessionId, ids) {
+      const next = { ...assignments }
+      if (ids.length === 0) delete next[sessionId]
+      else next[sessionId] = ids.slice(0, MAX_TAGS)
+      return assignmentList(next)
+    }
+
+    /**
+     * The flat list the Config field stores, from the map the code works with.
+     *
+     * Sorted by session id so a write is stable: the same tags always serialize to
+     * the same bytes, which keeps the config diff (and therefore the plugin's
+     * update check) from seeing a change when nothing changed.
+     *
+     * @param assignments - `{ sessionId: tagIds[] }`.
+     * @returns `[{ sessionId, tags }]`.
+     */
+    function assignmentList(assignments) {
+      return Object.keys(assignments)
+        .sort()
+        .map((id) => ({ sessionId: id, tags: assignments[id] }))
+    }
+
+    //#endregion
+
     //#region dictionaries
 
     const DICT = {
@@ -532,7 +678,7 @@ window.__ModuleLoader__.load({
         'preview.none': 'No turns recorded yet',
         'preview.unavailable': 'Press ⏎ to read this one',
         'preview.footer':
-          '↑↓ move · ⏎ open · tab drawer · ⌘⇧R rename · ⌘⇧P pin · ⌘⇧⌫ archive · esc',
+          '↑↓ move · ⏎ open · tab drawer · ⌘⇧R rename · ⌘⇧T tag · ⌘⇧P pin · ⌘⇧⌫ archive · esc',
         'archived.open': 'Archived — restore it first',
         'pin.archived': 'Archived sessions cannot be pinned',
         'archived.done': 'Archived',
@@ -548,6 +694,19 @@ window.__ModuleLoader__.load({
         'rename.done': 'Renamed to “{title}”',
         'rename.failed': 'Could not rename: {reason}',
         'rename.unavailable': 'the session did not respond',
+        'tags.aria': 'Tags',
+        'tags.hint': '⏎ toggle · esc done',
+        'tags.empty': 'No tags yet',
+        'tags.emptyHint': 'Type a name and press ⏎ to create it.',
+        'tags.create': 'Create “{label}”',
+        'tags.full': 'Three tags is the limit',
+        'tags.manage': 'Tags…',
+        'tags.clear': 'Clear',
+        'tags.notReady': 'Tags need one DSH restart',
+        'tags.notReadyHint':
+          'This running Host predates the tag store, so a tag could not be saved. Restart DSH once.',
+        'tags.failed': 'Could not save the tag',
+        'tags.count': '{n}',
       },
       zh: {
         'palette.aria': '会话面板',
@@ -599,7 +758,7 @@ window.__ModuleLoader__.load({
         'preview.none': '还没有 turn',
         'preview.unavailable': '按 ⏎ 进去看',
         'preview.footer':
-          '↑↓ 移动 · ⏎ 打开 · tab 抽屉 · ⌘⇧R 改名 · ⌘⇧P 置顶 · ⌘⇧⌫ 归档 · esc',
+          '↑↓ 移动 · ⏎ 打开 · tab 抽屉 · ⌘⇧R 改名 · ⌘⇧T 标签 · ⌘⇧P 置顶 · ⌘⇧⌫ 归档 · esc',
         'archived.open': '已归档，需先恢复',
         'pin.archived': '归档会话不能置顶',
         'archived.done': '已归档',
@@ -615,6 +774,18 @@ window.__ModuleLoader__.load({
         'rename.done': '已改名为「{title}」',
         'rename.failed': '改名失败：{reason}',
         'rename.unavailable': '会话没有响应',
+        'tags.aria': '标签',
+        'tags.hint': '⏎ 切换 · esc 完成',
+        'tags.empty': '还没有标签',
+        'tags.emptyHint': '输入一个名字，按 ⏎ 新建。',
+        'tags.create': '新建「{label}」',
+        'tags.full': '最多 3 个标签',
+        'tags.manage': '标签…',
+        'tags.clear': '清除',
+        'tags.notReady': '标签需要重启一次 DSH',
+        'tags.notReadyHint': '当前跑着的这版 host 还没有标签存储，写什么都存不下来。',
+        'tags.failed': '标签没存上',
+        'tags.count': '{n}',
       },
     }
 
@@ -677,6 +848,32 @@ window.__ModuleLoader__.load({
 .dsp-dot{width:7px;height:7px;border-radius:999px;background:var(--dsw-alias-state-idle-primary)}
 .dsp-dot-on{background:var(--dsw-alias-state-business-primary)}
 .dsp-dot-warn{background:var(--dsw-alias-state-warn-primary)}
+/* Tags. A chip is one control in both places it appears — beside a session and
+   in the filter bar — so pressing it must mean the same thing in both: filter. */
+.dsp-chips{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin-top:6px}
+.dsp-chip{display:inline-flex;align-items:center;gap:4px;max-width:170px;padding:1px 8px;border:1px solid var(--dsw-alias-border-l2);border-radius:999px;background:0 0;color:var(--dsw-alias-label-secondary);font-size:11px;line-height:16px;cursor:pointer}
+.dsp-chip:hover{background:var(--dsw-alias-interactive-bg-hover)}
+.dsp-chip[aria-pressed="true"]{border-color:var(--dsw-alias-state-business-primary);background:var(--dsw-alias-interactive-bg-hover-solid);color:var(--dsw-alias-label-primary)}
+.dsp-chipglyph{flex:none}
+.dsp-chiplabel{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dsp-chipcount{flex:none;color:var(--dsw-alias-label-tertiary)}
+.dsp-filters{display:flex;align-items:center;gap:6px;padding:0 16px 7px;overflow-x:auto;scrollbar-width:none}
+.dsp-filtersempty{font-size:11px;line-height:16px;color:var(--dsw-alias-label-tertiary)}
+/* A row keeps its width: glyphs only, with the labels in the accessible name. */
+.dsp-rowtags{flex:none;display:inline-flex;align-items:center;gap:3px;font-size:11px;line-height:16px}
+.dsp-tagdot{width:6px;height:6px;border-radius:999px;flex:none}
+.dsp-taglist{display:flex;flex-direction:column;gap:2px;margin-top:10px}
+.dsp-tagrow{display:flex;align-items:center;gap:8px;padding:5px 8px;border-radius:var(--dsw-radius-sm);cursor:pointer;font-size:13px;line-height:18px}
+.dsp-tagrow:hover{background:var(--dsw-alias-interactive-bg-hover)}
+.dsp-tagrow[data-dsp-tagactive="true"]{background:var(--dsw-alias-interactive-bg-hover-solid)}
+.dsp-tagrow[aria-selected="true"] .dsp-tagcheck{color:var(--dsw-alias-label-primary)}
+.dsp-tagcheck{flex:none;width:14px;text-align:center;color:var(--dsw-alias-label-tertiary)}
+.dsp-taglabel{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dsp-tagmeta{flex:none;font-size:11px;color:var(--dsw-alias-label-tertiary)}
+/* The sidebar's own menu rows are the reference: same weight, same hover, so this
+   entry does not look bolted on beside Pin/Rename/Fork/Archive. */
+.dsp-menuitem{display:block;box-sizing:border-box;width:100%;padding:6px 10px;border:0;border-radius:var(--dsw-radius-sm);background:0 0;color:var(--dsw-alias-label-primary);font:inherit;font-size:13px;line-height:18px;text-align:left;cursor:pointer}
+.dsp-menuitem:hover{background:var(--dsw-alias-interactive-bg-hover)}
 .dsp-panetitle{font-size:14px;font-weight:600;line-height:20px;word-break:break-word}
 .dsp-panemeta{margin-top:2px;font-size:11px;line-height:16px;color:var(--dsw-alias-label-tertiary)}
 .dsp-badges{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
@@ -738,6 +935,7 @@ window.__ModuleLoader__.load({
       const workspaceHook =
         typeof props.useWorkspaces === 'function' ? props.useWorkspaces : () => undefined
 
+      const tags = state.tags ?? EMPTY_TAGS
       const list = sessionHook((snapshot) => snapshot)
       const statuses = statusHook((snapshot) => snapshot)
       const workspaces = workspaceHook((snapshot) => snapshot)
@@ -759,6 +957,18 @@ window.__ModuleLoader__.load({
        */
       const [rename, setRename] = React.useState(null)
 
+      /**
+       * The open tag picker, or null: `{ draft, cursor }`.
+       *
+       * A mode of the same field, like rename, but it keeps the session list on
+       * screen: the picker replaces the preview pane, so you can still see (and
+       * click) which row you are tagging.
+       */
+      const [tagMode, setTagMode] = React.useState(null)
+
+      /** Tag ids the list is filtered by; several mean "any of these". */
+      const [tagFilter, setTagFilter] = React.useState([])
+
       const composingRef = React.useRef(false)
 
       const inputRef = React.useRef(null)
@@ -775,8 +985,11 @@ window.__ModuleLoader__.load({
         setQuery('')
         setView('recents')
         setManualActiveId(null)
-        // A rename that was open when the palette closed has no target any more.
+        // A rename or a tag picker that was open when the palette closed has no
+        // target any more, and a filter is part of the view it was set in.
         setRename(null)
+        setTagMode(null)
+        setTagFilter([])
         // The toast outlives the palette by design, so the previous action's
         // message would otherwise still be sitting there on reopen.
         palette.dismissNotice()
@@ -788,6 +1001,17 @@ window.__ModuleLoader__.load({
         const frame = requestAnimationFrame(() => inputRef.current?.focus())
         return () => cancelAnimationFrame(frame)
       }, [open, state.epoch, palette])
+
+      // A tag request arrives from the sidebar's menu row: open the palette with
+      // that Session highlighted and the picker already up. Consumed on read, so
+      // reopening with ⌘K later does not silently restore it.
+      const tagRequest = state.tagRequest
+      React.useEffect(() => {
+        if (tagRequest === null || tagRequest === undefined || !open) return
+        palette.clearTagRequest()
+        setManualActiveId(tagRequest.id)
+        setTagMode({ draft: '', cursor: 0 })
+      }, [tagRequest, open, palette])
 
       // Escape closes only the foreground layer. The host's real arbiter is
       // `useModalLayer`, which owns its own layer stack — and this palette is NOT
@@ -841,6 +1065,15 @@ window.__ModuleLoader__.load({
       }, [workspaces])
 
       const titles = React.useMemo(() => workspaceTitles(workspaces?.items), [workspaces])
+
+      /** Vocabulary by id, for rendering a row's tags without a linear scan. */
+      const tagIndex = React.useMemo(() => {
+        const map = new Map()
+        for (const tag of tags.vocabulary) map.set(tag.id, tag)
+        return map
+      }, [tags.vocabulary])
+
+      const tagFilterSet = React.useMemo(() => new Set(tagFilter), [tagFilter])
 
       /**
        * The filtered, grouped view model.
@@ -920,6 +1153,7 @@ window.__ModuleLoader__.load({
             // fallback would quietly turn derived text into user data on save.
             storedTitle: typeof row.title === 'string' ? row.title : '',
             workspace,
+            tagIds: Array.isArray(tags.assignments[id]) ? tags.assignments[id] : [],
             updatedAt: typeof row.updatedAt === 'number' ? row.updatedAt : 0,
             pendingLabel: pendingKind === undefined ? undefined : pendingKey(pendingKind),
             running: isArchived ? false : running,
@@ -932,6 +1166,21 @@ window.__ModuleLoader__.load({
           }
           if (isArchived) archivedRows.push(entry)
           else decorated.push(entry)
+        }
+
+        // Tag counts describe the list BEFORE the tag filter, so the bar keeps
+        // saying "there are N sessions with this tag" while you are narrowing.
+        const tagCounts = new Map()
+        for (const row of decorated) {
+          for (const tagId of row.tagIds) tagCounts.set(tagId, (tagCounts.get(tagId) ?? 0) + 1)
+        }
+
+        // Applied on the way out rather than inside the loop, and to both drawers:
+        // a filter has to mean the same thing in all three views.
+        if (tagFilterSet.size > 0) {
+          const keep = (row) => row.tagIds.some((tagId) => tagFilterSet.has(tagId))
+          decorated.splice(0, decorated.length, ...decorated.filter(keep))
+          archivedRows.splice(0, archivedRows.length, ...archivedRows.filter(keep))
         }
 
         // Each drawer's badge counts every live member, not just the ones the
@@ -956,6 +1205,7 @@ window.__ModuleLoader__.load({
             groups: rows.length > 0 ? [{ key: view, heading: undefined, rows }] : [],
             rows,
             total: matched.length,
+            tagCounts,
             pinnedTotal,
             archivedTotal,
             // Nothing is hidden while the view that holds it is open.
@@ -1000,13 +1250,27 @@ window.__ModuleLoader__.load({
           groups,
           rows,
           total,
+          tagCounts,
           pinnedTotal,
           archivedTotal,
           subagentHidden,
           count: listed,
           truncated: total > rows.length,
         }
-      }, [list, statuses, titles, archivedIds, pinnedIds, pinIndex, query, now, t, view])
+      }, [
+        list,
+        statuses,
+        titles,
+        archivedIds,
+        pinnedIds,
+        pinIndex,
+        query,
+        now,
+        t,
+        view,
+        tags,
+        tagFilterSet,
+      ])
 
       // Keep the highlight valid as the list changes: the manual pick while it is
       // still present, otherwise the first row. Derived rather than stored, so
@@ -1061,13 +1325,20 @@ window.__ModuleLoader__.load({
       const activate = React.useCallback(
         (row, isArchived) => {
           if (row === null) return
+          // While tagging, a click retargets the picker: opening the session would
+          // throw away the edit the click was meant to aim at.
+          if (tagMode !== null) {
+            setManualActiveId(row.id)
+            inputRef.current?.focus()
+            return
+          }
           if (isArchived) {
             palette.notify(t('archived.open'))
             return
           }
           palette.openSession(row.id)
         },
-        [palette, t],
+        [palette, t, tagMode],
       )
 
       /**
@@ -1132,8 +1403,130 @@ window.__ModuleLoader__.load({
         )
       }, [rename, renameRow, palette, cancelRename])
 
+      /**
+       * Open the tag picker on the highlighted row.
+       *
+       * Entering is allowed even when the Host cannot store tags yet: the picker
+       * then explains that instead of doing nothing, which is the difference
+       * between a feature that is not ready and one that appears broken.
+       */
+      const enterTagMode = React.useCallback(() => {
+        if (activeRow === null) return
+        setTagMode({ draft: '', cursor: 0 })
+      }, [activeRow])
+
+      const exitTagMode = React.useCallback(() => {
+        setTagMode(null)
+      }, [])
+
+      /**
+       * What Enter would act on, in order.
+       *
+       * The create row leads only when the draft names no existing tag, so typing
+       * the exact label of a tag you already have toggles it instead of creating a
+       * near-duplicate.
+       */
+      const tagDraft = tagMode === null ? '' : tagMode.draft
+      const tagOptions = React.useMemo(() => {
+        if (tagMode === null) return []
+        const needle = tagDraft.trim().toLowerCase()
+        const options = []
+        const exact = tags.vocabulary.some((tag) => tag.label.toLowerCase() === needle)
+        if (needle !== '' && !exact) options.push({ kind: 'create', label: tagDraft.trim() })
+        for (const tag of tags.vocabulary) {
+          if (needle !== '' && !tag.label.toLowerCase().includes(needle)) continue
+          options.push({ kind: 'tag', tag })
+        }
+        return options
+      }, [tagMode, tagDraft, tags.vocabulary])
+
+      const tagCursor =
+        tagMode === null ? 0 : Math.min(tagMode.cursor, Math.max(0, tagOptions.length - 1))
+
+      const moveTagCursor = React.useCallback(
+        (delta) => {
+          const count = tagOptions.length
+          if (count === 0) return
+          setTagMode((current) => {
+            if (current === null) return current
+            const index = Math.min(current.cursor, count - 1)
+            return { ...current, cursor: (index + delta + count) % count }
+          })
+        },
+        [tagOptions.length],
+      )
+
+      const applyTagOption = React.useCallback(
+        (option) => {
+          if (option === undefined || option === null || activeRow === null) return
+          if (option.kind === 'create') {
+            palette.createTag(option.label, activeRow.id)
+            // Clearing the draft is what makes the new tag immediately visible as a
+            // ticked row, rather than leaving the text that created it.
+            setTagMode({ draft: '', cursor: 0 })
+            return
+          }
+          palette.toggleTag(activeRow.id, option.tag.id)
+        },
+        [activeRow, palette],
+      )
+
+      const pickTag = React.useCallback(() => {
+        // Pressing Enter in a picker that cannot save says why, rather than doing
+        // nothing: the pane already explains it, and this is the same answer for
+        // someone who is typing rather than reading.
+        if (tags.ready !== true) {
+          palette.notify(t('tags.notReady'))
+          return
+        }
+        applyTagOption(tagOptions[tagCursor])
+      }, [applyTagOption, tagOptions, tagCursor, tags.ready, palette, t])
+
+      /** Filter means "any of these", which is how tags are used in practice. */
+      const toggleTagFilter = React.useCallback((tagId) => {
+        setTagFilter((current) =>
+          current.includes(tagId)
+            ? current.filter((id) => id !== tagId)
+            : [...current, tagId],
+        )
+        inputRef.current?.focus()
+      }, [])
+
       const onKeyDown = React.useCallback(
         (event) => {
+          if (tagMode !== null) {
+            // The chord that opened the picker closes it, so the gesture is a
+            // toggle in both directions.
+            if (
+              (event.key === 't' || event.key === 'T') &&
+              event.shiftKey &&
+              (event.metaKey || event.ctrlKey) &&
+              !event.altKey
+            ) {
+              event.preventDefault()
+              exitTagMode()
+              return
+            }
+            if (event.key === 'Escape') {
+              event.preventDefault()
+              event.stopPropagation()
+              exitTagMode()
+              return
+            }
+            if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+              event.preventDefault()
+              moveTagCursor(event.key === 'ArrowDown' ? 1 : -1)
+              return
+            }
+            if (event.key === 'Enter') {
+              event.preventDefault()
+              if (!composingRef.current && event.nativeEvent?.isComposing !== true) pickTag()
+              return
+            }
+            // Tab, Home and End stay the text field's: the picker has no ring of
+            // its own to cycle.
+            return
+          }
           if (rename !== null) {
             // The editor owns the field while it is open. Tab, the arrows, Home
             // and End are text editing again, and the list must not move under
@@ -1238,6 +1631,17 @@ window.__ModuleLoader__.load({
             return
           }
           if (
+            // ⌘⇧T: unclaimed, like ⌘⇧R. ⌘T is the browser panel.
+            (event.key === 't' || event.key === 'T') &&
+            event.shiftKey &&
+            (event.metaKey || event.ctrlKey) &&
+            !event.altKey
+          ) {
+            event.preventDefault()
+            enterTagMode()
+            return
+          }
+          if (
             // ⌘⇧R, not ⌘R: `page.refresh` owns ⌘R (and owns it natively — Electron
             // intercepts the chord before the page sees it), and not ⌘⌥G, which is
             // the host's own `session.rename` with the same fate. R for rename,
@@ -1264,6 +1668,13 @@ window.__ModuleLoader__.load({
           commitRename,
           cancelRename,
           startRename,
+          tagMode,
+          tagOptions,
+          enterTagMode,
+          exitTagMode,
+          moveTagCursor,
+          pickTag,
+          applyTagOption,
         ],
       )
 
@@ -1304,6 +1715,42 @@ window.__ModuleLoader__.load({
         state.pendingId !== null && state.pendingId === activeId && outline === null
       const exhausted = !pendingOutline && state.triedId === activeId
 
+      // One field, three jobs. Rename and tag are exclusive: both are entered from
+      // the list and exited with Escape, so only one can own the field.
+      const mode = rename !== null ? 'rename' : tagMode !== null ? 'tag' : 'search'
+
+      /** The label list for a row's glyph strip, used as its accessible name. */
+      const tagLabelsOf = (ids) =>
+        ids
+          .map((id) => tagIndex.get(id)?.label)
+          .filter((label) => typeof label === 'string' && label !== '')
+          .join(' · ')
+
+      /** One tag chip. The same control in the filter bar and in the preview. */
+      const tagChip = (tag, options = {}) =>
+        h(
+          'button',
+          {
+            key: tag.id,
+            type: 'button',
+            tabIndex: -1,
+            className: 'dsp-chip',
+            'aria-pressed': tagFilterSet.has(tag.id) ? 'true' : 'false',
+            title: tag.label,
+            onClick: () => toggleTagFilter(tag.id),
+          },
+          tag.emoji !== ''
+            ? h('span', { className: 'dsp-chipglyph' }, tag.emoji)
+            : h('span', {
+                className: 'dsp-tagdot',
+                style: { background: TAG_COLOR_TOKEN[tag.color] ?? TAG_COLOR_TOKEN.gray },
+              }),
+          h('span', { className: 'dsp-chiplabel' }, tag.label),
+          options.count === undefined
+            ? null
+            : h('span', { className: 'dsp-chipcount' }, t('tags.count', { n: options.count })),
+        )
+
       const rowNodes = []
       for (const group of model.groups) {
         if (group.heading !== undefined) {
@@ -1341,6 +1788,29 @@ window.__ModuleLoader__.load({
                   h('span', null, agoText(t, row.updatedAt, now)),
                 ),
               ),
+              row.tagIds.length === 0
+                ? null
+                : h(
+                    'span',
+                    {
+                      className: 'dsp-rowtags',
+                      // The labels are the accessible name; the visible strip is
+                      // glyphs only, so a row's width does not depend on its tags.
+                      title: tagLabelsOf(row.tagIds),
+                      'aria-label': tagLabelsOf(row.tagIds),
+                    },
+                    row.tagIds.map((tagId) => {
+                      const tag = tagIndex.get(tagId)
+                      if (tag === undefined) return null
+                      return tag.emoji !== ''
+                        ? h('span', { key: tagId, className: 'dsp-chipglyph' }, tag.emoji)
+                        : h('span', {
+                            key: tagId,
+                            className: 'dsp-tagdot',
+                            style: { background: TAG_COLOR_TOKEN[tag.color] ?? TAG_COLOR_TOKEN.gray },
+                          })
+                    }),
+                  ),
               row.tier === 0
                 ? h(RowMark, { dotClass: 'dsp-dot-warn', label: t(row.pendingLabel) })
                 : row.tier === 1
@@ -1381,6 +1851,15 @@ window.__ModuleLoader__.load({
         if (activeRow.pinned) badges.push(h(Badge, { key: 'pinned' }, t('status.pinned')))
         if (activeRow.archived) badges.push(h(Badge, { key: 'archived' }, t('status.archived')))
         if (badges.length > 0) parts.push(h('div', { key: 'badges', className: 'dsp-badges' }, badges))
+
+        const sessionTags = activeRow.tagIds
+          .map((tagId) => tagIndex.get(tagId))
+          .filter((tag) => tag !== undefined)
+        if (sessionTags.length > 0) {
+          parts.push(
+            h('div', { key: 'tags', className: 'dsp-chips' }, sessionTags.map((tag) => tagChip(tag))),
+          )
+        }
 
         parts.push(h('div', { key: 'hr', className: 'dsp-hr' }))
 
@@ -1448,6 +1927,83 @@ window.__ModuleLoader__.load({
                 hint: blankQuery ? undefined : t('palette.emptyHint'),
               }
 
+      // The picker takes the preview pane rather than the list: the row being
+      // tagged has to stay visible while you choose, and the list's own keyboard
+      // handling keeps working for retargeting.
+      let picker = null
+      if (tagMode !== null && activeRow !== null) {
+        const options = tagOptions.map((option, index) => {
+          const tag = option.kind === 'tag' ? option.tag : null
+          const assigned = tag !== null && activeRow.tagIds.includes(tag.id)
+          return h(
+            'div',
+            {
+              key: tag === null ? 'create' : tag.id,
+              id: `dsp-tagopt-${index}`,
+              className: 'dsp-tagrow',
+              role: 'option',
+              'aria-selected': assigned ? 'true' : 'false',
+              'data-dsp-tagactive': index === tagCursor ? 'true' : undefined,
+              // Keeps focus in the field, so ↑↓ and typing still work after a click.
+              onMouseDown: (event) => {
+                event.preventDefault()
+                setTagMode((current) =>
+                  current === null ? current : { ...current, cursor: index },
+                )
+              },
+              onClick: () => applyTagOption(option),
+            },
+            h('span', { className: 'dsp-tagcheck' }, tag === null ? '＋' : assigned ? '✓' : ''),
+            tag === null || tag.emoji === ''
+              ? tag === null
+                ? null
+                : h('span', {
+                    className: 'dsp-tagdot',
+                    style: {
+                      background: TAG_COLOR_TOKEN[tag.color] ?? TAG_COLOR_TOKEN.gray,
+                    },
+                  })
+              : h('span', { className: 'dsp-chipglyph' }, tag.emoji),
+            h(
+              'span',
+              { className: 'dsp-taglabel' },
+              tag === null ? t('tags.create', { label: option.label }) : tag.label,
+            ),
+            h(
+              'span',
+              { className: 'dsp-tagmeta' },
+              tag === null ? '' : t('tags.count', { n: model.tagCounts.get(tag.id) ?? 0 }),
+            ),
+          )
+        })
+        picker = h(
+          React.Fragment,
+          null,
+          h('div', { key: 'title', className: 'dsp-panetitle' }, activeRow.title),
+          h(
+            'div',
+            { key: 'meta', className: 'dsp-panemeta' },
+            tags.ready ? t('tags.hint') : t('tags.notReadyHint'),
+          ),
+          !tags.ready
+            ? h('div', { key: 'notready', className: 'dsp-note', role: 'status' }, t('tags.notReady'))
+            : null,
+          h(
+            'div',
+            {
+              key: 'list',
+              className: 'dsp-taglist',
+              id: 'dsp-taglistbox',
+              role: 'listbox',
+              'aria-label': t('tags.aria'),
+            },
+            options.length > 0
+              ? options
+              : h('div', { className: 'dsp-note' }, tags.ready ? t('tags.empty') : ''),
+          ),
+        )
+      }
+
       const footerLeft = [
         t('palette.count', { n: model.count }),
         model.subagentHidden > 0
@@ -1482,17 +2038,21 @@ window.__ModuleLoader__.load({
           h(
             'div',
             {
-              className: rename === null ? 'dsp-inputrow' : 'dsp-inputrow dsp-inputrow-renaming',
+              className:
+                mode === 'search' ? 'dsp-inputrow' : 'dsp-inputrow dsp-inputrow-renaming',
             },
             h('input', {
               ref: inputRef,
               className: 'dsp-input',
               type: 'text',
-              // While renaming this is a plain text box. Publishing it as a
-              // combobox would promise a listbox the arrow keys no longer drive.
-              role: rename === null ? 'combobox' : 'textbox',
-              'aria-label': rename === null ? undefined : t('rename.aria'),
-              ...(rename === null
+              // One field, three jobs, and the ARIA role follows the job: a plain
+              // text box while renaming (no list is driven), a combobox over the
+              // session list while searching, and a combobox over the tag list
+              // while picking.
+              role: mode === 'rename' ? 'textbox' : 'combobox',
+              'aria-label':
+                mode === 'rename' ? t('rename.aria') : mode === 'tag' ? t('tags.aria') : undefined,
+              ...(mode === 'search'
                 ? {
                     'aria-expanded': 'true',
                     'aria-controls': 'dsp-listbox',
@@ -1500,19 +2060,35 @@ window.__ModuleLoader__.load({
                       activeId === null ? undefined : `dsp-opt-${domSafe(activeId)}`,
                     'aria-autocomplete': 'list',
                   }
-                : rename.busy
-                  ? { 'aria-busy': 'true' }
-                  : {}),
+                : mode === 'tag'
+                  ? {
+                      'aria-expanded': 'true',
+                      'aria-controls': 'dsp-taglistbox',
+                      'aria-activedescendant':
+                        tagOptions.length === 0 ? undefined : `dsp-tagopt-${tagCursor}`,
+                      'aria-autocomplete': 'list',
+                    }
+                  : rename.busy
+                    ? { 'aria-busy': 'true' }
+                    : {}),
               // Not `disabled`: a disabled field loses focus, and the editor has to
               // stay focused through an in-flight write.
               readOnly: rename !== null && rename.busy,
-              placeholder: rename === null ? t('palette.placeholder') : t('rename.placeholder'),
-              value: rename === null ? query : rename.draft,
+              placeholder:
+                mode === 'search'
+                  ? t('palette.placeholder')
+                  : mode === 'rename'
+                    ? t('rename.placeholder')
+                    : t('tags.emptyHint'),
+              value: mode === 'search' ? query : mode === 'rename' ? rename.draft : tagDraft,
               spellCheck: false,
               autoComplete: 'off',
               onChange: (event) => {
                 const value = event.target.value
-                if (rename === null) setQuery(value)
+                if (mode === 'search') setQuery(value)
+                else if (mode === 'tag') {
+                  setTagMode((current) => (current === null ? current : { ...current, draft: value, cursor: 0 }))
+                }
                 // Typing clears the last failure: the message describes the draft
                 // that was submitted, not the one being typed.
                 else
@@ -1529,8 +2105,12 @@ window.__ModuleLoader__.load({
             }),
             h(
               'span',
-              { className: rename === null ? 'dsp-keyhint' : 'dsp-keyhint dsp-keyhint-renaming' },
-              rename === null ? (state.hotkeyLabel ?? '') : t('rename.hint'),
+              { className: mode === 'search' ? 'dsp-keyhint' : 'dsp-keyhint dsp-keyhint-renaming' },
+              mode === 'search'
+                ? (state.hotkeyLabel ?? '')
+                : mode === 'rename'
+                  ? t('rename.hint')
+                  : t('tags.hint'),
             ),
           ),
           // A rejected write leaves the field in rename mode with its draft intact,
@@ -1580,6 +2160,34 @@ window.__ModuleLoader__.load({
             ),
             h('span', { className: 'dsp-viewhint' }, t('view.hint')),
           ),
+          // The filter bar only lists tags that are actually in use, plus any that
+          // are selected — a vocabulary you have not applied yet is not a filter.
+          tags.vocabulary.length > 0
+            ? h(
+                'div',
+                { className: 'dsp-filters', role: 'group', 'aria-label': t('tags.aria') },
+                tags.vocabulary
+                  .filter(
+                    (tag) => (model.tagCounts.get(tag.id) ?? 0) > 0 || tagFilterSet.has(tag.id),
+                  )
+                  .map((tag) => tagChip(tag, { count: model.tagCounts.get(tag.id) ?? 0 })),
+                tagFilterSet.size > 0
+                  ? h(
+                      'button',
+                      {
+                        type: 'button',
+                        tabIndex: -1,
+                        className: 'dsp-chip',
+                        onClick: () => {
+                          setTagFilter([])
+                          inputRef.current?.focus()
+                        },
+                      },
+                      t('tags.clear'),
+                    )
+                  : null,
+              )
+            : null,
           h(
             'div',
             { className: 'dsp-body' },
@@ -1601,7 +2209,7 @@ window.__ModuleLoader__.load({
                   )
                 : rowNodes,
             ),
-            h('div', { className: 'dsp-pane' }, preview),
+            h('div', { className: 'dsp-pane' }, picker === null ? preview : picker),
           ),
           h(
             'div',
@@ -1836,6 +2444,42 @@ window.__ModuleLoader__.load({
 
     //#endregion
 
+    //#region sidebar menu
+
+    /**
+     * The sidebar session menu's tag entry.
+     *
+     * `sidebar.workspaces.session.menu.item` hands an entry only the row's identity,
+     * so this renders one `role="menuitem"` and defers the actual picking to the
+     * palette — one picker, opened over the row the menu belonged to, instead of a
+     * second tag UI that would have to be kept in step with it.
+     */
+    function TagMenuRow(props) {
+      const t = typeof props.t === 'function' ? props.t : (key) => key
+      const palette = props.palette
+      const sessionId = props.sessionId
+      // The menu's own dismiss hook. The owner always supplies it; the guard keeps
+      // a host that stops passing it from taking the entry down with it.
+      const hook = props.useMenuOpenState
+      const menu = typeof hook === 'function' ? hook() : null
+      const setMenuOpen = Array.isArray(menu) ? menu[1] : null
+      return h(
+        'button',
+        {
+          type: 'button',
+          role: 'menuitem',
+          className: 'dsp-menuitem',
+          onClick: () => {
+            if (typeof setMenuOpen === 'function') setMenuOpen(false)
+            palette.openTags(sessionId)
+          },
+        },
+        t('tags.manage'),
+      )
+    }
+
+    //#endregion
+
     //#region plugin
 
     /** Cordis services this plugin cannot run without. */
@@ -1854,6 +2498,8 @@ window.__ModuleLoader__.load({
         pendingId: null,
         triedId: null,
         notice: null,
+        tags: { ready: false, vocabulary: [], assignments: {} },
+        tagRequest: null,
       })
 
       /** Notices are sequenced so a repeat is still visible. */
@@ -1913,6 +2559,147 @@ window.__ModuleLoader__.load({
       }
 
       const wantsTakeOver = () => configValue().takeOver !== false
+
+      /**
+       * Tag storage, mirrored into the palette store.
+       *
+       * The Config form is the durable store — volatile fields, so a write updates
+       * the running plugin instead of remounting it, which is what keeps the
+       * palette open while a tag is saved. The palette store is what the component
+       * re-renders from, so there is one subscription rather than a snapshot read
+       * tucked inside the model.
+       */
+      let tagCache = { ready: false, vocabulary: [], assignments: {} }
+
+      const readTags = () => {
+        const value = configValue()
+        const vocabulary = normalizeVocabulary(value.tags)
+        return {
+          // `undefined`, not empty: a missing field means the running Host's schema
+          // predates tags, so any write would be dropped. Saying so is better than
+          // letting the user build a vocabulary that cannot be saved.
+          ready: Array.isArray(value.tags) && Array.isArray(value.assignments),
+          vocabulary,
+          assignments: normalizeAssignments(value.assignments, new Set(vocabulary.map((tag) => tag.id))),
+        }
+      }
+
+      const syncTags = () => {
+        tagCache = readTags()
+        store.update((state) => ({ ...state, tags: tagCache }))
+      }
+
+      /** Publish an optimistic tag state; the form subscription confirms it. */
+      const publishTags = (next) => {
+        tagCache = next
+        store.update((state) => ({ ...state, tags: tagCache }))
+      }
+
+      const writeTagField = (field, value) => {
+        if (form === undefined || typeof form.set !== 'function') {
+          notify(t('tags.failed'))
+          return Promise.resolve(false)
+        }
+        return Promise.resolve(form.set(field, value)).then(
+          (accepted) => {
+            if (accepted === false) {
+              // A stale revision or a schema that predates the field: re-read so the
+              // optimistic value cannot outlive the write that failed.
+              syncTags()
+              notify(t('tags.failed'))
+            }
+            return accepted !== false
+          },
+          (error) => {
+            console.warn(`${NS}: tag write failed`, error)
+            syncTags()
+            notify(t('tags.failed'))
+            return false
+          },
+        )
+      }
+
+      /**
+       * Add or remove one tag on one session.
+       *
+       * @param sessionId - which session.
+       * @param tagId - which tag.
+       * @returns whether the write was accepted.
+       */
+      const toggleTag = (sessionId, tagId) => {
+        if (tagCache.ready !== true) {
+          notify(t('tags.notReady'))
+          return Promise.resolve(false)
+        }
+        const current = tagCache.assignments[sessionId] ?? []
+        const has = current.includes(tagId)
+        if (!has && current.length >= MAX_TAGS) {
+          // Refusing with a reason beats a silent no-op: the ceiling is a rule, not
+          // a bug, and the third tag is already visible on the row.
+          notify(t('tags.full'))
+          return Promise.resolve(false)
+        }
+        const next = has ? current.filter((id) => id !== tagId) : [...current, tagId]
+        const assignments = { ...tagCache.assignments }
+        if (next.length === 0) delete assignments[sessionId]
+        else assignments[sessionId] = next
+        publishTags({ ...tagCache, assignments })
+        return writeTagField('assignments', assignmentList(assignments))
+      }
+
+      /**
+       * Create a tag from the picker's draft, applying it to the highlighted row.
+       *
+       * @param label - trimmed new label.
+       * @param sessionId - session to apply it to, or null to only create it.
+       * @returns the created tag, or null when nothing could be created.
+       */
+      const createTag = (label, sessionId) => {
+        const text = String(label ?? '').trim()
+        if (text === '' || tagCache.ready !== true) return null
+        // The new tag inherits the next colour in the ring, so a fresh vocabulary
+        // is immediately distinguishable without opening an editor.
+        const tag = {
+          id: tagIdFor(text, new Set(tagCache.vocabulary.map((entry) => entry.id))),
+          label: text,
+          emoji: '',
+          color: TAG_COLORS[tagCache.vocabulary.length % TAG_COLORS.length],
+        }
+        publishTags({ ...tagCache, vocabulary: [...tagCache.vocabulary, tag] })
+        writeTagField('tags', tagCache.vocabulary)
+        if (sessionId !== null && sessionId !== undefined) toggleTag(sessionId, tag.id)
+        return tag
+      }
+
+      /**
+       * Open the palette in tag mode for one session.
+       *
+       * The sidebar's own menu row calls this, so a tag can be attached without
+       * leaving the session list the menu was opened from.
+       *
+       * @param sessionId - the row the menu belongs to.
+       */
+      const openTags = (sessionId) => {
+        store.update((state) => ({
+          ...state,
+          open: true,
+          epoch: state.open ? state.epoch : state.epoch + 1,
+          tagRequest: { id: String(sessionId), seq: ((state.tagRequest?.seq ?? 0) + 1) },
+        }))
+      }
+
+      const clearTagRequest = () => {
+        store.update((state) => (state.tagRequest === null ? state : { ...state, tagRequest: null }))
+      }
+
+      // One read at mount, then the form's own subscription: the tag store has a
+      // single source of truth, and a write from anywhere (this plugin, the config
+      // page, hand-edited YAML) lands in the same place.
+      ctx.effect(() => {
+        syncTags()
+        if (form === undefined || typeof form.subscribe !== 'function') return undefined
+        return form.subscribe(() => syncTags())
+      }, `${NS}: tag store`)
 
       const toggle = () => {
         store.update((state) => ({
@@ -2297,6 +3084,10 @@ window.__ModuleLoader__.load({
         togglePin,
         rename: renameSession,
         currentSession,
+        toggleTag,
+        createTag,
+        openTags,
+        clearTagRequest,
         dismissNotice,
         ensureProjections,
         cancelProjections,
@@ -2356,6 +3147,25 @@ window.__ModuleLoader__.load({
             ),
           ),
         `${NS}: title editor entry`,
+      )
+
+      // The sidebar's session menu. Additive: a fresh id beside Pin/Rename/Fork/
+      // Archive, ordered after the shipped `session-id` row.
+      ctx.effect(
+        () =>
+          ctx.slots.inject('sidebar.workspaces.session.menu.item', () =>
+            ctx.slots.register(
+              {
+                name: 'sidebar.workspaces.session.menu.item',
+                id: `${ROW_ID}.tags`,
+                order: 460,
+                locale: NS,
+                inject: () => ({ palette: paletteFace }),
+              },
+              TagMenuRow,
+            ),
+          ),
+        `${NS}: tag menu row`,
       )
 
       ctx.effect(

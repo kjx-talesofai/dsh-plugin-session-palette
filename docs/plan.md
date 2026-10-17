@@ -924,3 +924,47 @@ if (!priority && (main || !match)) return                  // ← 主框架：�
 而 ⌘K → ⌘⇧R 完全不受影响 —— 这是选"压浮层"而不是"复刻 header"时主动接受的代价。
 测试里 5 个 mutation（去掉 null 守卫、去掉 current 守卫、去掉 blur 取消、把选择器放宽到 `crumb`、
 去掉 `preventDefault`）都会让套件变红；**默认 82 条测试**。
+
+---
+
+## 13. v0.4.0：标签（2026-10-18）
+
+用户："我想给 session 打标签，可以手动打，也是一个子功能……最多 3 个……点选标签然后过滤搜索。"
+
+### 13.1 存储：为什么是 Config，为什么必须 volatile
+
+| 候选 | 否决理由 |
+| --- | --- |
+| localStorage / IndexedDB | 桌面端的 web 源是 `http://127.0.0.1:<每次启动的随机端口>`（两次会话分别是 19387 / 52044），**换端口就换 origin**，标签会在重启后消失 |
+| 自己写文件 | 客户端没有文件系统；host 写文件要新 host 代码 + 新路径 |
+| **插件 Config** | ✅ 已经在用（`takeOver`），profile 的 `cordis.patch.yml` 持久化，客户端有写入口 |
+
+写入口是 `ctx.configForms.get(ROW_ID).set(field, value)`（`dsh-client-ui-settings` 的 `ConfigForm.set` → `remote.settings.mutate(namespace, [{op:'set', path:[field], value}], revision)`）。
+
+**关键在 `.volatile()`**，两件事都靠它：
+
+1. `index.js` 的注释早就写了：只有 volatile 字段会暴露给页面、并被接受写入。
+2. `cordis-plugin-loader/lib/index.js:382` 的 `equalExceptVolatile(...)` —— 当配置变更**只**发生在 volatile 字段时，`volatileOnly` 成立，走 `_commitVolatile()` **原地更新**，不 remount。没有这一条，保存一个标签会把面板自己 remount 掉（面板关闭、状态全丢）。
+
+`validateVolatileSchema`（`schemastery/lib/index.mjs:240`）要求 volatile 字段位于**固定对象路径**、且不能嵌套在另一个 volatile 字段里 —— 所以 `tags` / `assignments` 是顶层数组字段，不是 `tags: { ... }` 里的子字段。
+
+### 13.2 数据形状的三个决定
+
+- **id 而不是 label 做身份**：`tagIdFor(label)` 生成 id（保留 CJK 字母，其余折叠成 `-`），重名加 `-2` 后缀。改标签名不会让已有分配成为孤儿。
+- **assignments 是扁平数组** `[{sessionId, tags}]`，不是 map：schema 里的 map 需要一个 key domain，而数组不需要。空条目在读和写两头都丢掉。
+- **3 个上限在两边都强制**：写入时拒绝并提示（"最多 3 个标签"），读取时截断 —— 手改 YAML 也塞不进第四个。
+
+### 13.3 交互：为什么选择器占右栏，而不是又一个模式
+
+- 面板的左栏是"要动哪一行"，右栏是"这一行长什么样"。打标签需要**同时**看到两件事，所以选择器进右栏，左栏保持原样（甚至可以点另一行来改目标）。
+- 选择器是**同一个输入框的第三个职务**：搜索（combobox → 列表）、改名（textbox）、打标签（combobox → 标签表）。`aria-controls` / `aria-activedescendant` 跟着职务换，不假装同一个列表。
+- 输入的字**没有任何标签匹配时**，第一行变成「＋ 新建「xxx」」—— 这就是"打新标签"的入口，不需要先开编辑器。
+- 点标签 chip **就是筛选**（预览窗格和筛选条是同一个控件）：筛选是「任一命中」，因为标签是用来跨工作区/跨时间归组的，两个标签应该是并集。
+- 侧边栏右键菜单那行（`sidebar.workspaces.session.menu.item`，order 460，排在 `session-id` 之后）**不自己实现选择器**，只是"打开面板 + 高亮那行 + 进入标签模式"。一套实现，两个入口。
+
+### 13.4 诚实的边界
+
+- **要重启一次 DSH**。`tags` / `assignments` 是新 host 字段，host 只在启动时读 `index.js`；profile 里的 HMR (`dsh-hmr`) 只做配置热更新，`hmr.root` 是空的，所以模块不热载。没重启前，选择器写「标签需要重启一次 DSH」，**不假装保存成功**。
+- **候选编辑器（emoji / 颜色 / 改名）还没做**，本版只能新建（颜色按环取）、分配、移除。Plugin 管理的 configure 页暂时显示原始数据。这是下一个版本。
+- 标签是**这个 profile 的**数据，不进 session 日志，所以换机器不同步。
+- mutation 验证：去掉筛选 → 1 红；去掉 3 个上限 → 1 红；菜单项不关闭菜单 → 1 红。（`toggleTag` 里那道 `ready` 守卫是第二道防线 —— 外层 `pickTag` 已经拦住，所以单独拆掉它测试仍是绿的，这是"深度防御"而不是"没测到"。）
